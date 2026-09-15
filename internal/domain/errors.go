@@ -32,6 +32,7 @@ var (
 	ErrAccountNotActive       = errors.New("akun tidak aktif")
 	ErrAlreadyReversed        = errors.New("transaksi sudah pernah dibalik")
 	ErrNotReversible          = errors.New("transaksi tidak bisa dibalik")
+	ErrInvalidReversalLink    = errors.New("reversal harus menunjuk transaksi asal, transaksi lain tidak boleh")
 	ErrConcurrentModification = errors.New("data berubah oleh proses lain, coba lagi")
 
 	// idempotency

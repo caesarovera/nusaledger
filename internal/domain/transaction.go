@@ -78,6 +78,12 @@ func (t *Transaction) Validate() error {
 	if debit != credit {
 		return fmt.Errorf("%w: debit=%s kredit=%s", ErrUnbalanced, debit, credit)
 	}
+	if t.Type == TxnReversal && t.ReversesID == nil {
+		return ErrInvalidReversalLink
+	}
+	if t.Type != TxnReversal && t.ReversesID != nil {
+		return ErrInvalidReversalLink
+	}
 	return nil
 }
 

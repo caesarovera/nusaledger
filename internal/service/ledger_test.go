@@ -218,6 +218,17 @@ func TestIdempotency_ReplayKonflikInFlight(t *testing.T) {
 			t.Fatalf("mau hasil pemenang, dapat %v / %v", res, err)
 		}
 	})
+	t.Run("kalah balapan lalu hash beda → ErrIdempotencyConflict, bukan ErrIdempotencyInFlight", func(t *testing.T) {
+		svc, ledger, accounts, idem := newFixture(t)
+		ledger.post = func(context.Context, *domain.Transaction, domain.IdempotencyClaim) (*domain.PostResult, error) {
+			idem.rec = &domain.IdempotencyRecord{Claim: domain.IdempotencyClaim{RequestHash: "LAIN"}, StatusCode: 201, Result: stored}
+			return nil, domain.ErrIdempotencyInFlight
+		}
+		_, err := svc.Transfer(context.Background(), transferReq(accounts, 50_000_00))
+		if !errors.Is(err, domain.ErrIdempotencyConflict) {
+			t.Fatalf("mau ErrIdempotencyConflict, dapat %v", err)
+		}
+	})
 	t.Run("tanpa key → validation error", func(t *testing.T) {
 		svc, _, accounts, _ := newFixture(t)
 		req := transferReq(accounts, 50_000_00)

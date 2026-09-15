@@ -115,7 +115,12 @@ func (r *LedgerRepo) Post(ctx context.Context, txn *domain.Transaction, claim do
 		delta := domain.BalanceDelta(e, domain.Direction(acc.NormalBalance))
 
 		// Pre-check di Go memberi error yang rapi; CHECK constraint tetap jaring terakhir.
-		if acc.AccountType == string(domain.AccountUserWallet) && acc.Balance+int64(delta) < 0 {
+		// Money.Add mendeteksi overflow int64, jadi dicek sebelum bandingkan < 0.
+		newBal, err := domain.Money(acc.Balance).Add(delta)
+		if err != nil {
+			return nil, err
+		}
+		if acc.AccountType == string(domain.AccountUserWallet) && newBal < 0 {
 			return nil, fmt.Errorf("%w: akun %d", domain.ErrInsufficientBalance, e.AccountID)
 		}
 

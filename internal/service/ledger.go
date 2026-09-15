@@ -234,9 +234,10 @@ func (s *Ledger) postIdempotent(ctx context.Context, claim domain.IdempotencyCla
 
 	res, err := s.store.Post(ctx, txn, claim)
 	if errors.Is(err, domain.ErrIdempotencyInFlight) {
-		// Kalah balapan dengan permintaan kembar. Kalau pemenangnya sudah selesai, kembalikan hasilnya.
-		if res, done, err2 := s.replay(ctx, claim); done && err2 == nil {
-			return res, nil
+		// Kalah balapan dengan permintaan kembar. Tunggu keputusan pemenang: bisa sukses,
+		// masih in-flight, atau ternyata body-nya beda (conflict) — apa pun itu, teruskan apa adanya.
+		if res, done, err2 := s.replay(ctx, claim); done {
+			return res, err2
 		}
 		return nil, domain.ErrIdempotencyInFlight
 	}

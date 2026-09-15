@@ -77,6 +77,34 @@ func TestTransaction_Validate(t *testing.T) {
 	}
 }
 
+// G-2 #4: Validate menegakkan konsistensi Type <-> ReversesID sebelum menyentuh database.
+func TestTransaction_Validate_KonsistensiReversalLink(t *testing.T) {
+	t.Parallel()
+	seimbang := []domain.Entry{
+		{AccountID: acctAndi, Direction: domain.DirectionDebit, Amount: 1000},
+		{AccountID: acctBudi, Direction: domain.DirectionCredit, Amount: 1000},
+	}
+	origID := uuid.New()
+	tests := []struct {
+		name       string
+		txnType    domain.TxnType
+		reversesID *uuid.UUID
+		wantErr    error
+	}{
+		{"REVERSAL tanpa ReversesID ditolak", domain.TxnReversal, nil, domain.ErrInvalidReversalLink},
+		{"TRANSFER dengan ReversesID terisi ditolak", domain.TxnTransfer, &origID, domain.ErrInvalidReversalLink},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			txn := &domain.Transaction{Type: tt.txnType, Entries: seimbang, ReversesID: tt.reversesID}
+			if err := txn.Validate(); !errors.Is(err, tt.wantErr) {
+				t.Fatalf("mau %v, dapat %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
 // Empat kombinasi arah × normal balance. Salah tanda di sini = seluruh ledger salah.
 func TestBalanceDelta(t *testing.T) {
 	t.Parallel()

@@ -76,6 +76,10 @@ func TestConcurrency_T04_TransferParalelDariSatuAkun(t *testing.T) {
 
 	t.Logf("sukses=%d saldo_kurang=%d konflik=%d saldo_pengirim=%s", okCount.Load(), insufficient.Load(), conflict.Load(), balanceOf(t, from))
 
+	if conflict.Load() != 0 {
+		t.Fatalf("mau 0 konflik optimistic lock (FOR UPDATE seharusnya mencegahnya), dapat %d", conflict.Load())
+	}
+
 	// Invariant diperiksa PERTAMA: berapa yang sukses boleh berbeda antar implementasi,
 	// tetapi uang tercipta/hilang tidak boleh terjadi apa pun yang terjadi.
 	assertAllInvariants(t)

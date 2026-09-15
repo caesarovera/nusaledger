@@ -13,6 +13,8 @@ import (
 const (
 	codeUniqueViolation = "23505"
 	codeCheckViolation  = "23514"
+	codeDeadlock        = "40P01"
+	codeSerialization   = "40001"
 )
 
 // translate menerjemahkan error pgx menjadi error domain, HANYA di lapisan ini.
@@ -29,6 +31,9 @@ func translate(err error) error {
 		return err
 	}
 	switch pgErr.Code {
+	case codeDeadlock, codeSerialization:
+		// klien boleh retry, bukan 500
+		return domain.ErrConcurrentModification
 	case codeCheckViolation:
 		switch pgErr.ConstraintName {
 		case "chk_wallet_non_negative":
@@ -37,6 +42,8 @@ func translate(err error) error {
 			return domain.ErrUnbalanced
 		case "entries_amount_check":
 			return domain.ErrAmountNotPositive
+		case "chk_reversal_link", "chk_normal_balance", "chk_owner":
+			return domain.ErrInvalidReversalLink
 		}
 	case codeUniqueViolation:
 		switch pgErr.ConstraintName {

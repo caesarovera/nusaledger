@@ -4,6 +4,8 @@ package integration
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -218,6 +220,68 @@ func TestLedgerRepo_Post_Reversal(t *testing.T) {
 	got2, _ := repo.GetTransaction(ctx, res2.Transaction.ID, nil)
 	if got2.Transaction.Status != domain.TxnPosted {
 		t.Fatal("reversal yang gagal tidak boleh mengubah status transaksi asal")
+	}
+	assertAllInvariants(t)
+}
+
+// T-10c: 10 goroutine mencoba membalik transaksi yang SAMA secara bersamaan.
+// Kunci akun (FOR UPDATE) + UPDATE status POSTED->REVERSED bersyarat harus membuat
+// TEPAT 1 yang menang, sisanya ErrAlreadyReversed — bukan double reversal.
+func TestLedgerRepo_Post_ReversalKonkuren(t *testing.T) {
+	resetDB(t)
+	ctx := testCtx(t)
+	repo := postgres.NewLedgerRepo(testPool)
+	andi := seedUser(t, "andi@test.local", domain.RoleUser)
+	budi := seedUser(t, "budi@test.local", domain.RoleUser)
+	admin := seedUser(t, "admin@test.local", domain.RoleAdmin)
+	wAndi := seedWallet(t, andi, 100_000*domain.Rupiah)
+	wBudi := seedWallet(t, budi, 0)
+
+	orig, _ := domain.NewTransfer(wAndi, wBudi, sysFeeID, 50_000*domain.Rupiah, 1_000*domain.Rupiah, andi, "salah kirim")
+	res, err := repo.Post(ctx, orig, newClaim(andi))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 10
+	var wg sync.WaitGroup
+	var okCount, alreadyReversed atomic.Int64
+	errCh := make(chan error, workers)
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rev, err := domain.NewReversal(res.Transaction, admin, "concurrent")
+			if err != nil {
+				errCh <- err
+				return
+			}
+			_, err = repo.Post(ctx, rev, newClaim(admin)) // key berbeda per goroutine: menguji lock akun, bukan idempotency
+			switch {
+			case err == nil:
+				okCount.Add(1)
+			case errors.Is(err, domain.ErrAlreadyReversed):
+				alreadyReversed.Add(1)
+			default:
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("error tak terduga: %v", err)
+	}
+
+	if got := okCount.Load(); got != 1 {
+		t.Fatalf("reversal sukses: mau tepat 1, dapat %d", got)
+	}
+	if got := alreadyReversed.Load(); got != workers-1 {
+		t.Fatalf("ErrAlreadyReversed: mau %d, dapat %d", workers-1, got)
+	}
+	if balanceOf(t, wAndi) != 100_000*domain.Rupiah || balanceOf(t, wBudi) != 0 || balanceOf(t, sysFeeID) != 0 {
+		t.Fatalf("saldo setelah reversal harus kembali semula: andi=%s budi=%s fee=%s", balanceOf(t, wAndi), balanceOf(t, wBudi), balanceOf(t, sysFeeID))
 	}
 	assertAllInvariants(t)
 }
