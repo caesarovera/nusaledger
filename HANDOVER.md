@@ -1,11 +1,11 @@
 # HANDOVER
 
 ## Terakhir dikerjakan (2026-09-16)
-Selesai: Sesi 1–9 (seluruh Minggu 1). Config + logger + pool; domain lengkap dengan builder 4 operasi; unit test hijau dengan `-race`: domain 93,5 %, config 90 %. Lint bersih. Bug #1 ditemukan lewat test (env `required` vs `notEmpty`).
+Selesai: Sesi 1–13. `LedgerRepo.Post` atomik (idempotency, FOR UPDATE terurut, optimistic lock, reversal, outbox), AccountRepo, IdempotencyRepo, harness testcontainers; 11 integration test hijau dengan `-race` (T-02, T-03, T-10, T-10b, K-05).
+G-1 (review skema) dilakukan inline oleh sesi utama saat menulis migration: menambah `chk_owner`, `chk_reversal_link`, `uq_entry_account_per_txn`, dan `CONSTRAINT` name pada RAISE.
 
 ## Berikutnya
-Sesi 11: harness integration test (testcontainers + migrate dari `../../migrations`, `TestMain` satu container per paket, 3 helper invariant). Lalu Sesi 12–13: rencana & implementasi `LedgerRepo.PostTransaction`.
-G-1 (review skema, Fable) belum dijalankan — jadwalkan sebelum Sesi 13.
+Sesi 19 (dimajukan, di level repository): test konkurensi T-04, T-05, T-07, T-08, T-09 → `test/integration/concurrency_test.go`. Lalu Sesi 14: EXPLAIN cursor query → `docs/evidence/`. Lalu Sesi 18: service + ports.
 
 ## Keputusan yang sudah diambil
 - Semua keputusan docs/06 §2 (F-01…F-06, K-01…K-09) DISETUJUI pemilik proyek pada 2026-09-16.

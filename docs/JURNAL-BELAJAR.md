@@ -320,3 +320,104 @@ ok  internal/domain           1.9s  coverage: 93.5%   ← target DoD ≥ 90 %
 ok  internal/platform/logger  1.9s  coverage: 80.0%
 golangci-lint run ./...   → 0 issues
 ```
+
+---
+
+## Sesi 11 — Harness integration test dengan testcontainers (2026-09-16)
+
+### Apa
+- `migrations/embed.go`: `//go:embed *.sql` — file migration ikut masuk binary.
+- `internal/platform/dbmigrate`: menjalankan migration ter-embed lewat `golang-migrate` (source `iofs`, driver `pgx5`).
+- `test/integration/main_test.go`: `TestMain` menyalakan **satu** container `postgres:17-alpine`, migrasi, buat pool; semua test memakainya.
+- `helpers_test.go`: `resetDB` (TRUNCATE + seed akun sistem), `seedUser`, `seedWallet` (saldo awal lewat TOPUP sungguhan), dan **tiga assert invariant**.
+- `schema_test.go`: T-02, T-03, K-05 dibuktikan dari Go, termasuk `pgErr.Code` dan `ConstraintName`.
+
+```powershell
+go test -tags=integration -race -count=1 ./test/...
+```
+
+### Kenapa
+**Test unit tidak pernah bisa membuktikan SQL benar.** Mock hanya membuktikan Go memanggil fungsi yang benar; ia tidak tahu apakah `ORDER BY` ada atau trigger menyala. Hanya PostgreSQL sungguhan yang bisa.
+
+**Testcontainers, bukan database lokal**, karena database lokal menyimpan sisa data dari run sebelumnya, dan test yang lulus karena data sisa adalah test yang berbohong. Container baru per run = kondisi awal yang bersih dan **versi Postgres persis sama** dengan compose.
+
+**Satu container per paket (`TestMain`), bukan per test.** Menyalakan Postgres ±5 detik; dengan 30 test itu 2,5 menit terbuang. Isolasi antar test cukup lewat `TRUNCATE ... RESTART IDENTITY CASCADE` yang butuh milidetik.
+
+**Migration di-embed dan dijalankan dari Go**, bukan `migrate` CLI dari shell test. Dua alasan: (1) test tidak bergantung pada alat eksternal dan PATH; (2) migration yang diuji **persis** yang akan dijalankan aplikasi saat startup nanti — tidak ada dua sumber kebenaran.
+
+**`seedWallet` mengisi saldo lewat TOPUP sungguhan** (transaksi + 2 entry + update balance), bukan `UPDATE accounts SET balance = ...`. Kalau seed memakai UPDATE langsung, `assertMaterializedBalanceMatchesEntries` langsung gagal sejak awal — invariant harus benar dari baris pertama data.
+
+**`TRUNCATE`, bukan `DELETE`, untuk reset.** `entries` punya trigger yang menolak DELETE; `TRUNCATE` adalah operasi berbeda yang tidak memicu trigger baris. Ini juga alasan trigger append-only bukan pertahanan satu-satunya — di produksi, hak `TRUNCATE` dicabut dari role aplikasi.
+
+### Contoh — cara membaca error Postgres dari Go
+```go
+err = tx.Commit(ctx)                       // trigger DEFERRED baru bicara di sini
+var pgErr *pgconn.PgError
+if errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "trg_entries_balanced" {
+    // tidak seimbang
+}
+```
+`errors.As` menggali rantai `%w` sampai menemukan `*pgconn.PgError`. Membandingkan `pgErr.Message` (teks) akan rapuh; kode SQLSTATE dan nama constraint stabil.
+
+### Bukti
+`ok test/integration 10.6s` — 5 test, container menyala sekali.
+
+---
+
+## Sesi 12–13 — `LedgerRepo.Post`: fungsi terpenting di seluruh sistem (2026-09-16)
+
+### Apa
+`internal/repository/postgres/ledger_repo.go`. Urutan langkah di dalam SATU transaksi database:
+1. `Validate()` (lapis kedua).
+2. Klaim idempotency: `INSERT ... ON CONFLICT (user_id, key) DO NOTHING`; 0 baris → `ErrIdempotencyInFlight`.
+3. Kunci akun: `WHERE id = ANY($1) ORDER BY id FOR UPDATE`; jumlah baris ≠ jumlah id → `ErrAccountNotFound`; status ≠ ACTIVE → `ErrAccountNotActive`.
+4. Kalau reversal: `UPDATE transactions SET status='REVERSED' WHERE id=$1 AND status='POSTED'`; 0 baris → `ErrAlreadyReversed`.
+5. Insert header `transactions`.
+6. Per entry: hitung delta, **pre-check saldo dompet di Go**, `UPDATE accounts ... WHERE id AND version AND status='ACTIVE' RETURNING balance`, insert `entries` dengan `balance_after`.
+7. Simpan hasil ke `idempotency_keys` (status 201 + JSON hasil).
+8. Tulis satu baris `outbox_events`.
+9. `Commit()` — trigger memverifikasi debit = kredit.
+
+Ditambah `errors.go` (`translate`: SQLSTATE → error domain), `account_repo.go`, `idempotency_repo.go`.
+
+### Kenapa — enam keputusan yang membuat kode ini benar
+| Keputusan | Kalau tidak dilakukan |
+|---|---|
+| Klaim idempotency **di dalam** transaksi yang sama | Key tercatat, transaksi rollback → retry ditolak padahal uang belum pindah |
+| `ORDER BY id` sebelum `FOR UPDATE` | Andi→Budi dan Budi→Andi bersamaan saling tunggu = deadlock |
+| `version` di `WHERE` update saldo | Lost update saat dua proses membaca saldo lama |
+| `status = 'ACTIVE'` di SQL, bukan hanya di Go | Ada jendela waktu antara pengecekan dan update |
+| `translate()` mengubah pelanggaran CHECK jadi error domain | Klien menerima 500 padahal seharusnya 422 |
+| `defer tx.Rollback(ctx)` di baris kedua | Satu `return` yang terlewat meninggalkan transaksi menggantung → kunci akun tertahan |
+
+**Kenapa pre-check saldo di Go padahal ada CHECK constraint:** keduanya dipertahankan. Pre-check memberi error rapi tanpa membuat Postgres melempar exception (yang membatalkan transaksi dan lebih mahal). CHECK adalah jaring terakhir untuk jalur yang lupa pre-check.
+
+**Kenapa hasil disimpan sebagai JSON `storedResult` privat, bukan DTO HTTP:** repository tidak boleh tahu HTTP. Yang disimpan adalah *hasil domain* (transaksi + entry + saldo sesudah). Handler nanti merender DTO dari hasil ini, sehingga replay menghasilkan respons **identik** tanpa repository mengenal bentuk JSON API.
+
+**Kenapa reversal menandai transaksi asal DAN mengandalkan `uq_reversal`:** UPDATE bersyarat `status='POSTED'` menangkap kasus normal dengan pesan jelas; unique index menangkap kasus dua reversal bersamaan yang lolos pengecekan pada saat yang sama. Dua lapis untuk dua ancaman.
+
+**Kenapa outbox ditulis sekarang padahal belum ada konsumen:** menambah satu INSERT di jalur yang sudah teruji itu murah sekarang; mengubah `Post` setelah T-04–T-09 hijau itu mahal (semua test uang harus diulang). Fase 2 tinggal menambah relay.
+
+### Contoh — pola `RowToStructByName`
+```go
+type lockedAccount struct {
+    ID      int64  `db:"id"`
+    Balance int64  `db:"balance"`
+    Version int64  `db:"version"`
+    // ...
+}
+rows, _ := tx.Query(ctx, `SELECT id, balance, version, ... ORDER BY id FOR UPDATE`, ids)
+accounts, err := pgx.CollectRows(rows, pgx.RowToStructByName[lockedAccount])
+```
+`CollectRows` menutup `rows` sendiri dan memetakan kolom ke field lewat tag `db`. Lebih aman daripada `Scan` manual yang urutannya mudah tertukar.
+
+### Bukti
+```
+--- PASS: TestLedgerRepo_Post_Transfer                       (3 entry, saldo Andi 49.000, Budi 50.000, fee 1.000)
+--- PASS: TestLedgerRepo_Post_SaldoKurang                    (rollback bersih, klaim idempotency ikut hilang)
+--- PASS: TestLedgerRepo_Post_IdempotencyTersimpanDanInFlight (Find → 201 + hasil identik; key ulang → in-flight)
+--- PASS: TestLedgerRepo_Post_AkunTidakAktifDanTidakAda
+--- PASS: TestLedgerRepo_Post_Reversal                       (T-10 & T-10b)
+--- PASS: TestLedgerRepo_TrialBalanceDanDrift
+ok  test/integration  7.8s  (-race)
+```
