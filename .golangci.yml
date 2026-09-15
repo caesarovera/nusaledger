@@ -8,7 +8,7 @@ linters:
     - errorlint            # errors.Is/As, bukan == atau type assertion
     - gocritic
     - gosec                # SQL string concat, crypto lemah, dsb.
-    - misspell
+    # misspell sengaja TIDAK diaktifkan: komentar berbahasa Indonesia ("implementasi") dianggap salah eja Inggris.
     - noctx                # request HTTP tanpa context
     - revive
     - rowserrcheck         # rows.Err() diperiksa

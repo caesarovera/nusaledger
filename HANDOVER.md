@@ -1,10 +1,11 @@
 # HANDOVER
 
 ## Terakhir dikerjakan (2026-09-16)
-Selesai: Sesi 1–5. Alat terpasang; repo & `.claude/` siap; Postgres 17 di host port **5433**; 8 migration jalan, rollback terbukti; 18 skenario uji trigger lulus (`docs/evidence/trigger-test.md`).
+Selesai: Sesi 1–9 (seluruh Minggu 1). Config + logger + pool; domain lengkap dengan builder 4 operasi; unit test hijau dengan `-race`: domain 93,5 %, config 90 %. Lint bersih. Bug #1 ditemukan lewat test (env `required` vs `notEmpty`).
 
 ## Berikutnya
-Sesi 6: `internal/config`, `platform/logger`, `repository/postgres/pool.go`. Lalu Sesi 7–9: domain Money, Transaction, unit test (T-01, T-14, K-02).
+Sesi 11: harness integration test (testcontainers + migrate dari `../../migrations`, `TestMain` satu container per paket, 3 helper invariant). Lalu Sesi 12–13: rencana & implementasi `LedgerRepo.PostTransaction`.
+G-1 (review skema, Fable) belum dijalankan — jadwalkan sebelum Sesi 13.
 
 ## Keputusan yang sudah diambil
 - Semua keputusan docs/06 §2 (F-01…F-06, K-01…K-09) DISETUJUI pemilik proyek pada 2026-09-16.

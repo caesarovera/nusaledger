@@ -206,3 +206,117 @@ Uji `UPDATE entries ... WHERE id = 1` menghasilkan `UPDATE 0`, bukan ERROR. Buka
 
 ### Bukti
 14 ERROR persis pada 14 skenario HARUS GAGAL; 4 skenario HARUS SUKSES berhasil; trial balance `1000 | 1000 | 0`. Transkrip lengkap: `docs/evidence/trigger-test.md`.
+
+---
+
+## Sesi 6 — Config, logger, connection pool (2026-09-16)
+
+### Apa
+- `internal/config/config.go`: struct dengan tag `env:"..."`, dibaca `caarlos0/env`, lalu **divalidasi** di `Load()`.
+- `internal/platform/logger/logger.go`: `slog` JSON dengan `ReplaceAttr` yang mengganti nilai field sensitif menjadi `[REDACTED]`.
+- `internal/repository/postgres/pool.go`: `pgxpool` dengan MaxConns 25, MinConns 5, lifetime 30 m, idle 5 m, dan `Ping` saat startup.
+
+### Kenapa
+**Konfigurasi divalidasi saat startup, bukan saat dipakai.** `Load()` menolak `APP_ENV` asing, `JWT_SECRET` pendek di produksi, `MIN > MAX`, refresh token lebih pendek dari access token. Aplikasi yang menolak start dengan pesan jelas jauh lebih murah daripada aplikasi yang hidup lalu gagal saat ada yang login.
+
+**Nominal (fee, min, max) di config, bukan hardcode** (BR-13, BR-14). Keputusan bisnis tidak boleh butuh deploy ulang, dan test bisa memakai nilai berbeda tanpa mengakali kode.
+
+**Redaksi log terpusat**, bukan "ingat jangan log password" di tiap handler. Manusia lupa; `ReplaceAttr` tidak. Daftar kuncinya: `password`, `token`, `access_token`, `refresh_token`, `authorization`, `secret`.
+
+**`Ping` di `NewPool`.** `pgxpool.New` **tidak** membuka koneksi — ia malas (*lazy*). Tanpa `Ping`, aplikasi "berhasil start" dengan database mati, dan semua request 500. Dengan `Ping`, kegagalan muncul sebagai "aplikasi menolak start".
+
+### Contoh — pola validasi
+```go
+func Load() (Config, error) {
+    var c Config
+    if err := env.Parse(&c); err != nil {
+        return c, fmt.Errorf("memuat konfigurasi: %w", err)   // bungkus dengan konteks, %w agar errors.Is tetap jalan
+    }
+    if err := c.validate(); err != nil {
+        return c, fmt.Errorf("konfigurasi tidak valid: %w", err)
+    }
+    return c, nil
+}
+```
+
+### 🐛 Bug #1 yang ditemukan lewat test (bahan README)
+Test "tanpa DATABASE_URL" memakai `t.Setenv("DATABASE_URL", "")`, dan `Load()` **tidak** mengembalikan error. Ternyata tag `required` di `caarlos0/env` hanya memeriksa "variabel ada", bukan "variabel berisi". Di produksi, `DATABASE_URL=` (kosong karena salah ketik di manifest) akan lolos validasi lalu gagal di `Ping` dengan pesan yang membingungkan. Perbaikan: `env:"DATABASE_URL,required,notEmpty"`.
+Pelajaran: **baca dokumentasi tag pustaka pihak ketiga**, dan tulis test untuk kasus "ada tapi kosong", bukan hanya "tidak ada".
+
+### Bukti
+```
+ok  internal/config          coverage: 90.0%
+ok  internal/platform/logger coverage: 80.0%   (nilai "rahasia123" tidak muncul di output)
+```
+
+---
+
+## Sesi 7–8 — Domain: Money, Account, Entry, Transaction, User (2026-09-16)
+
+### Apa
+`internal/domain/` berisi lima file dan **tidak mengimpor paket internal apa pun** (hanya stdlib + `uuid`):
+- `errors.go` — sentinel error, dikelompokkan per kategori.
+- `money.go` — `type Money int64`, `NewMoney`, `Add`/`Sub` dengan deteksi overflow, `String`.
+- `account.go` — `Direction`, `AccountType` + `NormalBalance()`, `AccountStatus`, `Account`.
+- `entry.go` — `Entry`, `PostedEntry`, `BalanceDelta`.
+- `transaction.go` — `Transaction`, `Validate()`, `AccountIDs()`, dan **empat builder** `NewTopup`, `NewTransfer`, `NewWithdraw`, `NewReversal`.
+
+### Kenapa
+**`type Money int64`, bukan `int64` telanjang.** Dengan `int64`, `transfer(amount, userID)` yang argumennya tertukar lolos kompilasi. Dengan `Money`, compiler menolaknya. Biayanya nol saat runtime.
+
+**Overflow diperiksa manual di `Add`.** Go tidak melempar error saat `int64` meluap; nilainya berputar menjadi negatif tanpa peringatan. Rumus deteksinya: kalau menambah bilangan positif tapi hasilnya lebih kecil, atau menambah negatif tapi hasilnya lebih besar, berarti meluap.
+
+**`NormalBalance()` adalah method di `AccountType`, bukan tabel `if`.** Satu tempat kebenaran: hanya `SYSTEM_CASH` (aset) yang bernormal DEBIT. `BalanceDelta` lalu jadi satu rumus untuk semua akun: searah normal → `+amount`, berlawanan → `-amount`.
+
+**Builder empat operasi ada di domain, bukan service.** Di Fase 2, worker message queue juga akan memposting transaksi. Kalau susunan entry ada di service HTTP, worker bisa menyusun arah yang salah tanpa ada yang menyadari. Dengan builder di domain, hanya ada satu cara membuat TRANSFER.
+
+**`Validate()` menegakkan tiga aturan sekaligus sebelum database disentuh:** minimal dua entry, semua `amount > 0`, Σdebit = Σkredit, dan (K-02) satu akun sekali saja. Ini duplikasi *sengaja* dengan trigger database: domain memberi pesan error berguna dalam mikrodetik; trigger adalah jaminan terakhir untuk jalur yang lupa memanggil `Validate()`.
+
+**`AccountIDs()` mengembalikan id TERURUT dan tanpa duplikat.** Ini bukan kerapian: urutan inilah yang dipakai `FOR UPDATE` nanti, dan urutan tetap adalah satu-satunya hal yang mencegah deadlock transfer silang.
+
+**`NewReversal` menolak reversal atas reversal** (`ErrNotReversible`). BR-11 tidak melarangnya secara eksplisit, tapi membalik pembalikan hanya membuat jejak audit membingungkan; kalau reversal salah, buat transaksi baru yang benar.
+
+### Contoh — cara membaca `BalanceDelta`
+```go
+// Andi (USER_WALLET, normal CREDIT) didebit Rp 51.000 saat transfer:
+delta := domain.BalanceDelta(domain.Entry{Direction: DEBIT, Amount: 51_000_00}, CREDIT)
+// DEBIT ≠ CREDIT → -51.000 → saldo Andi berkurang. Benar: utang perusahaan ke Andi berkurang.
+
+// Kas perusahaan (SYSTEM_CASH, normal DEBIT) didebit Rp 100.000 saat topup:
+delta = domain.BalanceDelta(domain.Entry{Direction: DEBIT, Amount: 100_000_00}, DEBIT)
+// DEBIT == DEBIT → +100.000 → kas bertambah. Benar.
+```
+
+---
+
+## Sesi 9 — Unit test domain (2026-09-16)
+
+### Apa
+`money_test.go`, `transaction_test.go` (paket `domain_test`, bukan `domain`), `config_test.go`, `logger_test.go`. Semua table-driven dengan `t.Run` dan `t.Parallel()`.
+```powershell
+go test -race -count=1 -cover ./internal/...
+```
+
+### Kenapa
+**Paket `domain_test` (external test package)** memaksa test memakai domain lewat API publiknya saja, persis seperti service nanti. Kalau sesuatu tidak bisa diuji dari luar, itu sinyal API-nya kurang.
+
+**Table-driven + `errors.Is`.** Satu daftar kasus, satu loop; menambah kasus baru = menambah satu baris. Jenis error dibandingkan dengan `errors.Is`, bukan string pesan, supaya pesan boleh diubah tanpa merusak test.
+
+**`t.Parallel()` di semua subtest domain** karena domain murni tanpa state bersama. Ini juga cara murah menangkap *data race* tersembunyi begitu `-race` aktif.
+
+**Empat kasus `BalanceDelta` diuji satu per satu** (arah × normal balance). Kesalahan tanda di sini membuat seluruh ledger salah dengan cara yang sangat sulit dilacak di kemudian hari.
+
+**Test builder memverifikasi *efek saldo*, bukan hanya struktur.** `TestNewTransfer` menghitung delta Andi (−51.000), Budi (+50.000), fee (+1.000) dengan `BalanceDelta` — ini menguji skenario docs/01 §2.4 apa adanya.
+
+### Jebakan yang ditemui
+1. **`go test -race` di Windows butuh cgo → butuh gcc.** Errornya: `-race requires cgo`. Solusi: `winget install BrechtSanders.WinLibs.POSIX.UCRT`, lalu muat ulang PATH. Di Linux/CI ini tidak terjadi.
+2. **Linter `misspell` menandai "implementasi" sebagai salah eja "implements".** Karena seluruh komentar berbahasa Indonesia, linter ini dimatikan di `.golangci.yml` dengan alasan tertulis.
+3. **gofmt menyelaraskan kolom struct.** Setelah menambah field/komentar, jalankan `gofmt -s -w .` — lint akan menolak file yang belum diformat.
+
+### Bukti
+```
+ok  internal/config           1.9s  coverage: 90.0%
+ok  internal/domain           1.9s  coverage: 93.5%   ← target DoD ≥ 90 %
+ok  internal/platform/logger  1.9s  coverage: 80.0%
+golangci-lint run ./...   → 0 issues
+```
