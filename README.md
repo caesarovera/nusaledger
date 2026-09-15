@@ -11,7 +11,7 @@ Ledger *double-entry* untuk dompet digital, ditulis dengan Go 1.27 dan PostgreSQ
 ## Menjalankan
 
 ```bash
-docker compose up -d postgres   # PostgreSQL 17
+docker compose up -d postgres   # PostgreSQL 17 di host port 5433
 make migrate-up                 # skema + trigger + seed akun sistem
 make run                        # API di :8080
 ```

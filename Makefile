@@ -3,7 +3,7 @@
 SHELL := bash
 .PHONY: help test test-int race cover lint fmt migrate-up migrate-down migrate-drop up down run build tidy
 
-DATABASE_URL ?= postgres://nusa:nusa_dev_only@localhost:5432/nusaledger?sslmode=disable
+DATABASE_URL ?= postgres://nusa:nusa_dev_only@127.0.0.1:5433/nusaledger?sslmode=disable
 export GOFLAGS ?= -mod=readonly
 
 help: ## daftar perintah
@@ -35,8 +35,9 @@ migrate-up: ## jalankan semua migration
 migrate-down: ## batalkan satu migration terakhir
 	migrate -path migrations -database "$(DATABASE_URL)" down 1
 
-migrate-drop: ## HATI-HATI: buang seluruh skema (dev saja)
-	migrate -path migrations -database "$(DATABASE_URL)" drop -f
+db-reset: ## HATI-HATI (dev saja): buang seluruh skema termasuk data & enum, lalu migrate up
+	docker compose exec -T postgres psql -U nusa -d nusaledger -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+	migrate -path migrations -database "$(DATABASE_URL)" up
 
 up: ## nyalakan PostgreSQL lokal
 	docker compose up -d postgres

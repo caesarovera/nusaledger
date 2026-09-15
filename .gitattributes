@@ -1,0 +1,5 @@
+# Semua file teks disimpan LF di repo dan di working copy, apa pun OS-nya.
+# Makefile, skrip shell, dan Dockerfile rusak bila berakhiran CRLF.
+* text=auto eol=lf
+*.png binary
+*.jpg binary

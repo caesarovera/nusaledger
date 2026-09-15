@@ -105,3 +105,104 @@ go build ./...          # sukses (modul valid meski belum ada kode)
 make help               # daftar perintah muncul
 git log --oneline       # commit pertama: chore: bootstrap repo
 ```
+
+---
+
+## Sesi 3 — PostgreSQL 17 lewat Docker Compose (2026-09-16)
+
+### Apa
+```bash
+docker compose up -d postgres
+docker compose ps                      # tunggu sampai "healthy"
+psql -h 127.0.0.1 -p 5433 -U nusa -d nusaledger -c "SELECT version();"
+```
+
+### Kenapa
+**Database lewat Docker, bukan instalasi lokal**, supaya versinya persis sama dengan yang dipakai test (testcontainers) dan produksi nanti. "Jalan di laptop saya" berhenti menjadi alasan.
+
+**`healthcheck` + menunggu `healthy` sebelum lanjut.** PostgreSQL butuh beberapa detik sebelum menerima koneksi. Aplikasi yang start bersamaan akan gagal terhubung, dan Anda akan menghabiskan waktu mencari bug yang sebenarnya cuma soal waktu.
+
+### Jebakan yang ditemui — dan ini pelajaran penting
+Koneksi dari host **gagal autentikasi** padahal `docker compose exec postgres psql` berhasil. Diagnosis:
+```bash
+netstat -ano | grep ":5432" | grep LISTEN     # DUA proses: postgres.exe (laragon) dan com.docker.backend.exe
+```
+Ada PostgreSQL lokal (laragon) yang sudah menempati port 5432. Windows mengarahkan koneksi ke layanan yang lebih dulu ada, jadi kita login ke Postgres yang salah dengan password yang salah.
+
+**Cara berpikirnya:** kalau gejalanya "password salah" tapi Anda yakin password benar, pertanyaannya bukan "password apa yang benar?" melainkan **"saya sedang bicara dengan server yang mana?"** Cek siapa yang mendengarkan di port itu sebelum mengutak-atik kredensial.
+
+**Solusi yang dipilih:** petakan host `5433` → container `5432` di compose. Kenapa bukan mematikan laragon: mengubah layanan sistem milik orang lain untuk kebutuhan satu proyek itu rapuh; port mapping itu lokal ke proyek dan reversibel. Konsekuensinya `DATABASE_URL` memakai `127.0.0.1:5433` (bukan `localhost`, supaya tidak ambigu IPv4/IPv6).
+
+### Bukti
+```
+nusa | PostgreSQL 17.11 on x86_64-pc-linux-musl
+```
+
+---
+
+## Sesi 4 — Migration & skema (2026-09-16)
+
+### Apa
+Delapan pasang file di `migrations/` (`000001` … `000008`, masing-masing `.up.sql` dan `.down.sql`), isinya dari `docs/02 §2` ditambah tiga keputusan baru:
+- **K-01** `idempotency_keys`: `PRIMARY KEY (user_id, key)`.
+- **K-02** `entries`: `UNIQUE (transaction_id, account_id)` — satu akun satu entry per transaksi.
+- **K-05** trigger `trg_transactions_status_only`: `transactions` hanya boleh mengubah `status`, dan hanya `POSTED → REVERSED`.
+
+Tambahan kecil yang tidak ada di dokumen tapi menutup lubang: `chk_owner` (dompet wajib punya `user_id`, akun sistem wajib `NULL`), `chk_reversal_link` (hanya `REVERSAL` yang boleh punya `reverses_transaction_id`), dan `CONSTRAINT = 'trg_entries_balanced'` pada `RAISE` supaya kode Go bisa membedakan pelanggaran ini dari `CHECK` lain lewat `pgErr.ConstraintName`.
+
+```bash
+make migrate-up
+migrate -path migrations -database "$DATABASE_URL" down -all   # uji rollback selagi kosong
+migrate -path migrations -database "$DATABASE_URL" up
+```
+
+### Kenapa
+**Skema sebelum kode Go**, karena skema adalah kontrak yang paling mahal diubah. Kode direfaktor satu jam; mengubah tabel berisi jutaan baris uang butuh perencanaan migrasi tersendiri.
+
+**Satu migration satu tujuan.** Kalau `000005_ledger_triggers` gagal di tengah, Anda tahu persis apa yang belum terpasang. File "semua-dalam-satu" yang gagal meninggalkan skema setengah jadi yang sulit didiagnosis.
+
+**Setiap `up` punya `down` yang diuji sekarang**, selagi database kosong. Nanti saat sudah ada data, Anda tidak akan berani mengujinya.
+
+**Kenapa `DEFERRABLE INITIALLY DEFERRED` pada trigger balanced:** entry disisipkan satu per satu. Setelah baris pertama (debit 1.000), transaksi belum seimbang. Kalau trigger diperiksa saat itu juga, semua transaksi selalu ditolak. Dengan *deferred*, pemeriksaan ditunda sampai `COMMIT`. Konsekuensi untuk kode Go nanti: **error muncul dari `tx.Commit()`, bukan dari `tx.Exec()`** — ini sering mengejutkan.
+
+**Kenapa `RAISE ... USING ERRCODE = 'check_violation', CONSTRAINT = 'trg_entries_balanced'`:** driver pgx mengembalikan `PgError{Code: "23514", ConstraintName: "..."}`. Tanpa nama constraint, kode Go tidak bisa membedakan "tidak seimbang" dari "saldo negatif" (keduanya 23514) kecuali membandingkan string pesan — dan itu rapuh.
+
+### Jebakan yang ditemui
+1. **`go install .../cmd/migrate@latest` menghasilkan binary TANPA driver database.** Errornya: `unknown driver postgres (forgotten import?)`. Perbaikan: `go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest`. Pelajaran umum Go: build tag mengubah isi binary; baca README alat sebelum `go install`.
+2. **`migrate drop` tidak membuang tipe ENUM dan function**, hanya tabel. `up` berikutnya gagal: `type "account_type" already exists`, dan database masuk keadaan *dirty*. Untuk reset dev dengan data: `DROP SCHEMA public CASCADE; CREATE SCHEMA public;` lalu `migrate up` (sudah jadi `make db-reset`).
+3. **`down -all` gagal begitu ada data** di `entries`: migration 8 (`DELETE FROM accounts`) ditolak foreign key. Ini **disengaja** — migration tidak boleh menghapus jejak uang. Artinya `down` hanya untuk skema kosong atau rollback struktur, bukan alat reset data.
+
+### Bukti
+```
+8/u seed_system_accounts   → versi 8, 8 tabel (7 + schema_migrations)
+trg_entries_balanced | entries | deferrable=t | initdeferred=t
+down -all → 0 tabel → up → versi 8
+```
+
+---
+
+## Sesi 5 — Uji trigger manual, sebelum satu baris Go pun (2026-09-16)
+
+### Apa
+Skrip `docs/evidence/trigger-test.sql` berisi 18 skenario, dijalankan lewat psql; transkripnya disimpan di `docs/evidence/trigger-test.md`. Setiap skenario diberi label **HARUS GAGAL** atau **HARUS SUKSES** sebelum dijalankan.
+
+### Kenapa
+**Seluruh jaminan kebenaran sistem bergantung pada trigger dan constraint ini.** Kalau `COMMIT` transaksi tidak seimbang *berhasil*, semua kode Go di atasnya membangun di atas pasir. Mengujinya lewat psql, tanpa Go, memisahkan dua pertanyaan: "apakah databasenya benar?" dan "apakah kode Go-nya benar?". Kalau nanti test Go gagal, Anda sudah tahu jawaban pertanyaan pertama.
+
+**Menulis ekspektasi (HARUS GAGAL / HARUS SUKSES) sebelum menjalankan** adalah inti dari pengujian. Tanpa itu, Anda cenderung menerima apa pun hasilnya sebagai "benar".
+
+### Contoh — skenario terpenting
+```sql
+BEGIN;
+INSERT INTO transactions (id, txn_type) VALUES ('0000...0001', 'TOPUP');
+INSERT INTO entries (transaction_id, account_id, direction, amount, balance_after)
+VALUES ('0000...0001', 1, 'DEBIT', 1000, 1000);          -- INSERT 0 1  ← lolos! belum diperiksa
+COMMIT;                                                   -- ERROR: transaksi ... tidak seimbang: debit=1000 kredit=0
+```
+Perhatikan: `INSERT` **berhasil**, `COMMIT` yang **gagal**. Itulah *deferred*.
+
+### Jebakan yang ditemui
+Uji `UPDATE entries ... WHERE id = 1` menghasilkan `UPDATE 0`, bukan ERROR. Bukan karena trigger tidak jalan, tapi karena **id 1 sudah "terbakar"** oleh transaksi yang di-rollback di skenario sebelumnya: *sequence* PostgreSQL tidak ikut di-rollback. Baris nyata ber-id 2 dan 3. `UPDATE 0` berarti "tidak ada baris yang cocok", dan trigger `BEFORE UPDATE ... FOR EACH ROW` tidak pernah dipanggil untuk nol baris. Pelajaran: **hasil "tidak ada error" belum tentu "lolos uji"** — periksa jumlah baris yang tersentuh.
+
+### Bukti
+14 ERROR persis pada 14 skenario HARUS GAGAL; 4 skenario HARUS SUKSES berhasil; trial balance `1000 | 1000 | 0`. Transkrip lengkap: `docs/evidence/trigger-test.md`.
