@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build:*)", "Bash(go test:*)", "Bash(go vet:*)", "Bash(go run:*)",
+      "Bash(go mod:*)", "Bash(gofmt:*)", "Bash(go tool:*)",
+      "Bash(make:*)",
+      "Bash(migrate:*)",
+      "Bash(golangci-lint:*)", "Bash(govulncheck:*)",
+      "Bash(docker compose:*)", "Bash(docker build:*)", "Bash(docker images:*)",
+      "Bash(k6 run:*)",
+      "Bash(git status)", "Bash(git diff:*)", "Bash(git add:*)",
+      "Bash(git commit:*)", "Bash(git log:*)"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(rm -rf:*)",
+      "Bash(psql:*production*)",
+      "Read(./.env)",
+      "Read(./.env.*)"
+    ]
+  }
+}

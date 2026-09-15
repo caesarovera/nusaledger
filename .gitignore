@@ -1,0 +1,17 @@
+# binary & artefak build
+bin/
+*.exe
+*.test
+*.out
+coverage.html
+
+# rahasia — JANGAN PERNAH di-commit
+.env
+.env.*
+!.env.example
+
+# lokal
+.claude/settings.local.json
+.idea/
+.vscode/
+*.log
