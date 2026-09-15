@@ -91,10 +91,11 @@ func (r *AccountRepo) SystemAccount(ctx context.Context, typ domain.AccountType)
 // Mengambil limit+1 baris agar pemanggil tahu ada halaman berikutnya.
 func (r *AccountRepo) ListEntries(ctx context.Context, accountID int64, beforeID *int64, limit int) ([]domain.PostedEntry, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT e.id, e.transaction_id, e.direction, e.amount, e.balance_after, e.created_at,
+		SELECT e.id, e.transaction_id, a.public_id, a.account_type, e.direction, e.amount, e.balance_after, e.created_at,
 		       t.txn_type, t.description
 		FROM entries e
 		JOIN transactions t ON t.id = e.transaction_id
+		JOIN accounts a ON a.id = e.account_id
 		WHERE e.account_id = $1
 		  AND ($2::BIGINT IS NULL OR e.id < $2)
 		ORDER BY e.id DESC
@@ -107,12 +108,12 @@ func (r *AccountRepo) ListEntries(ctx context.Context, accountID int64, beforeID
 	out := make([]domain.PostedEntry, 0, limit+1)
 	for rows.Next() {
 		var e domain.PostedEntry
-		var dir, typ string
+		var dir, typ, accType string
 		var amount, after int64
-		if err := rows.Scan(&e.ID, &e.TransactionID, &dir, &amount, &after, &e.CreatedAt, &typ, &e.Description); err != nil {
+		if err := rows.Scan(&e.ID, &e.TransactionID, &e.AccountPublicID, &accType, &dir, &amount, &after, &e.CreatedAt, &typ, &e.Description); err != nil {
 			return nil, fmt.Errorf("scan mutasi: %w", err)
 		}
-		e.AccountID = accountID
+		e.AccountID, e.AccountType = accountID, domain.AccountType(accType)
 		e.Direction, e.Amount, e.BalanceAfter, e.TxnType = domain.Direction(dir), domain.Money(amount), domain.Money(after), domain.TxnType(typ)
 		out = append(out, e)
 	}

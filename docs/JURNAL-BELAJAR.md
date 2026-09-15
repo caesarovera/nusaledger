@@ -421,3 +421,212 @@ accounts, err := pgx.CollectRows(rows, pgx.RowToStructByName[lockedAccount])
 --- PASS: TestLedgerRepo_TrialBalanceDanDrift
 ok  test/integration  7.8s  (-race)
 ```
+
+---
+
+## Sesi 14 — Membuktikan cursor pagination dengan EXPLAIN (2026-09-16)
+
+### Apa
+Mengisi DB dev dengan 100 dompet, 100.000 transaksi, 200.000 entries lewat `generate_series`, lalu `EXPLAIN (ANALYZE, BUFFERS)` pada query mutasi rekening (docs/02 §3.3). Hasil di `docs/evidence/explain-cursor.md`. DB di-reset setelahnya.
+
+### Kenapa
+**Index yang "seharusnya dipakai" belum tentu dipakai.** Planner PostgreSQL memutuskan berdasarkan statistik; pada tabel kosong ia memilih Seq Scan karena memang lebih murah. Pembuktian harus dengan data berukuran realistis **dan** setelah `ANALYZE`.
+
+**Kenapa OFFSET ditolak:** `OFFSET 90000` memaksa Postgres membaca 90.020 baris index lalu membuang 90.000. Cursor `id < $2` langsung melompat ke posisi lewat index, jadi halaman ke-1 dan ke-5000 sama cepatnya.
+
+### Bukti
+```
+Index Scan using idx_entries_account_id_desc on entries e  (actual rows=20)
+Index Scan using transactions_pkey on transactions t        (loops=20)
+Execution Time: 0.489 ms   ← 200.000 baris, dengan JOIN
+```
+
+### Jebakan
+`INSERT ... SELECT 'DEBIT'` gagal: kolom bertipe enum `entry_direction`, literal teks di `UNION ALL` harus di-cast eksplisit (`'DEBIT'::entry_direction`). Di `INSERT ... VALUES` biasa Postgres meng-cast otomatis; di `SELECT`/`UNION` tidak.
+
+---
+
+## Sesi 19 — Test konkurensi: T-04, T-05, T-07, T-08/T-09 (2026-09-16)
+
+### Apa
+`test/integration/concurrency_test.go`, dijalankan dengan `-race`, T-04 dengan `-count=5`.
+
+| Test | Skenario | Hasil |
+|---|---|---|
+| T-04 | 100 goroutine transfer Rp 50.000 + fee dari saldo Rp 1.000.000, key berbeda | **19** sukses, 81 saldo kurang, sisa Rp 31.000 |
+| T-05 | 10 goroutine, key SAMA | **1** transaksi, 9 in-flight, saldo naik sekali |
+| T-07 | 50× A→B dan 50× B→A bersamaan | 100 sukses, **0** deadlock |
+| T-08/09 | 1.000 transaksi acak, 8 worker, 5 dompet | 947 sukses, 53 ditolak saldo, trial balance 0, drift 0 |
+
+### Kenapa
+**Pola test konkurensi:** N goroutine → `sync.WaitGroup` → hitung hasil dengan `atomic.Int64` → error tak terduga dikirim lewat channel berkapasitas N (bukan `t.Errorf` dari goroutine, yang tidak aman setelah test selesai) → assert.
+
+**Invariant diperiksa PERTAMA, sebelum jumlah sukses.** Berapa yang sukses adalah properti implementasi; uang tidak tercipta/hilang adalah properti kebenaran. Kalau invariant gagal, itulah judul beritanya.
+
+**Key berbeda per goroutine di T-04, key sama di T-05.** Yang pertama menguji konkurensi saldo; yang kedua menguji idempotency. Mencampurnya membuat kegagalan sulit didiagnosis.
+
+**`-count=5` untuk T-04.** Bug konkurensi sering lolos sekali dan gagal di percobaan keempat. Sekali lulus belum berarti benar.
+
+**Kenapa T-08 memakai `rand.NewPCG(seed)` per worker:** hasil bisa direproduksi kalau gagal — sebutkan seed-nya, jalankan lagi, dapat urutan yang sama.
+
+### Contoh — kerangka yang bisa dipakai ulang
+```go
+var wg sync.WaitGroup
+var okCount atomic.Int64
+errCh := make(chan error, workers)
+for i := 0; i < workers; i++ {
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        _, err := repo.Post(ctx, txn, newClaim(userID))
+        switch {
+        case err == nil:                                   okCount.Add(1)
+        case errors.Is(err, domain.ErrInsufficientBalance): // kegagalan yang sah
+        default:                                            errCh <- err
+        }
+    }()
+}
+wg.Wait(); close(errCh)
+for err := range errCh { t.Errorf("error tak terduga: %v", err) }
+assertAllInvariants(t)
+```
+
+---
+
+## Sesi 20 — Eksperimen: lepas kuncinya, lihat apa yang rusak (2026-09-16)
+
+### Apa
+Dua varian `ledger_repo.go` diuji terhadap T-04 dan T-07, lalu kode dipulihkan dengan `git checkout`. Transkrip: `docs/evidence/eksperimen-kunci.md`.
+
+| Varian | T-04 (jawaban benar: 19) | T-07 (jawaban benar: 0 deadlock) | Uang utuh? |
+|---|---|---|---|
+| **Asli** (FOR UPDATE + version) | 19 sukses, 81 saldo kurang | 100 sukses, 0 deadlock | ✅ |
+| **A** tanpa FOR UPDATE, version tetap | **8** sukses, **92 konflik**, sisa Rp 592.000 | **98 deadlock** | ✅ (592.000 = 1.000.000 − 8×51.000) |
+| **B** tanpa FOR UPDATE dan tanpa version | 19 sukses, 81 saldo kurang | **99 deadlock** | ✅ |
+
+### Kenapa hasilnya begini — ini bagian yang layak diceritakan di wawancara
+**Dugaan awal (dari dokumen 05):** melepas `version` akan memunculkan *lost update* dan saldo yang tidak masuk akal. **Kenyataannya tidak**, dan alasannya penting:
+
+1. **`UPDATE accounts SET balance = balance + $1`** adalah update **relatif**. PostgreSQL mengunci baris saat UPDATE dan menghitung `balance + delta` dari nilai **terbaru** yang sudah di-commit, bukan dari nilai yang dibaca Go. Lost update klasik hanya terjadi pada pola *baca → hitung di aplikasi → tulis nilai absolut* (`SET balance = 949000`). Kode kita tidak pernah menulis nilai absolut.
+2. **`CHECK (balance >= 0)`** menolak transfer ke-20 dan seterusnya di level database, meskipun pre-check di Go memakai saldo basi. Ini jaring pengaman terakhir yang bekerja persis seperti dirancang.
+3. Jadi apa gunanya `version`? Pada varian A ia **menolak 92 permintaan** yang sebenarnya bisa sukses — karena tanpa `FOR UPDATE`, semua goroutine membaca `version` yang sama lalu 91 di antaranya kalah. Optimistic lock menjamin **kebenaran**, tetapi buruk untuk **throughput** pada kontensi tinggi. Itulah mengapa kode asli memakai `FOR UPDATE` (pesimistik) sebagai kunci utama, dan `version` hanya sebagai sabuk pengaman kedua.
+4. Yang **benar-benar rusak** tanpa `FOR UPDATE ... ORDER BY id` adalah **deadlock** (98–99 dari 100 transfer silang). Tanpa `SELECT ... FOR UPDATE` terurut, kunci baris diambil oleh statement `UPDATE` sesuai urutan entry: A→B mengunci A lalu B, B→A mengunci B lalu A → saling tunggu → PostgreSQL membunuh salah satunya. Satu klausa `ORDER BY id` menghilangkan seluruh kelas bug ini.
+
+**Pelajaran yang lebih besar:** pertahanan berlapis bekerja. Melepas dua lapis sekaligus pun uang tetap utuh, karena lapis ketiga (update relatif + CHECK) masih berdiri. Tetapi sistemnya menjadi **tidak dapat dipakai** (deadlock) — benar tetapi tidak berguna adalah kegagalan juga.
+
+### Contoh — cara mereproduksi lost update sungguhan (jangan di-commit)
+```go
+// pola SALAH: baca, hitung di Go, tulis absolut
+var bal int64
+tx.QueryRow(ctx, `SELECT balance FROM accounts WHERE id=$1`, id).Scan(&bal)
+tx.Exec(ctx, `UPDATE accounts SET balance = $1 WHERE id = $2`, bal+delta, id)   // ← 100 goroutine: banyak yang hilang
+```
+Tanpa `FOR UPDATE` dan tanpa `version`, pola ini akan menghasilkan saldo penerima yang lebih kecil dari 19×50.000. Kode NusaLedger sengaja tidak pernah ditulis begini.
+
+### Bukti
+`docs/evidence/eksperimen-kunci.md`; setelah `git checkout`, T-04 kembali 19 sukses dan `git diff` kosong.
+
+---
+
+## Sesi 18 & 22 — Service: use case ledger dan auth (2026-09-16)
+
+### Apa
+- `service/ports.go`: enam interface kecil yang **dibutuhkan** service (`LedgerStore`, `AccountStore`, `IdempotencyStore`, `UserStore`, `RefreshTokenStore`, `PasswordHasher`, `AccessTokenIssuer`).
+- `service/ledger.go`: `Topup`, `Withdraw`, `Transfer`, `Reverse`, `GetTransaction`, `MyWallet`, `MyEntries`, `TrialBalance`; semua operasi uang lewat satu jalur `postIdempotent`.
+- `service/auth.go`: `Register`, `Login`, `Refresh` (rotasi), `Logout`.
+- `service/cursor.go`: cursor = base64url(id) (K-04).
+- `platform/token/jwt.go` (HS256, `WithValidMethods`), `platform/password/argon2.go` (argon2id, format PHC).
+- `repository/postgres/user_repo.go` (`CreateWithWallet` satu transaksi), `token_repo.go`.
+- Unit test service dengan **stub** (tanpa database): 84 % coverage.
+
+### Kenapa
+**Interface didefinisikan di package `service`, bukan `repository`.** Interface adalah kebutuhan pemakainya. Di sisi repository ia cenderung membengkak jadi 20 method "siapa tahu perlu". Di sisi service, tiap interface hanya 2–4 method → stub untuk test jadi 15 baris, dan test berjalan dalam mikrodetik.
+
+**Service tidak tahu HTTP.** Ia mengembalikan `domain.ErrInsufficientBalance`, bukan `422`. Di Fase 2, worker queue memanggil service yang sama tanpa konsep status code.
+
+**Alur idempotency ada di satu fungsi (`postIdempotent`)**, dipakai semua operasi uang:
+1. `Find` → ada + hash sama → kembalikan hasil lama; hash beda → `ErrIdempotencyConflict`; masih diproses → `ErrIdempotencyInFlight`.
+2. Belum ada → susun transaksi (builder domain) → `Validate()` → `Post`.
+3. `Post` mengembalikan in-flight (kalah balapan dengan permintaan kembar) → cek lagi; kalau pemenang sudah selesai, kembalikan hasilnya. Klien tidak perlu tahu ada balapan.
+
+**Id akun sistem dimuat sekali di `NewLedger`.** Partial unique index menjamin tepat satu akun per jenis, jadi aman di-cache selama proses hidup; satu query per transfer terhemat.
+
+**Login anti-enumerasi:** email tidak ada → tetap jalankan `Verify` dengan *dummy hash* supaya durasinya sama dengan password salah, dan pesan errornya identik. Tanpa ini, penyerang bisa memetakan daftar email dari perbedaan waktu respons.
+
+**Refresh token dirotasi**: setiap `Refresh` mencabut token lama dan menerbitkan yang baru. Token yang dicuri hanya berguna sampai pemilik aslinya me-refresh — dan saat itu pencurian terdeteksi (token lama ditolak).
+
+**`CreateWithWallet` satu transaksi database.** Tidak boleh ada pengguna tanpa dompet. Dua statement terpisah berarti crash di antaranya menciptakan pengguna yang tidak bisa bertransaksi.
+
+**JWT: `WithValidMethods([HS256])`** menutup `alg: none` dan *algorithm confusion*; `WithIssuer`, `WithExpirationRequired` memastikan token tanpa `exp` ditolak. `Subject` = `public_id`, bukan id internal.
+
+**argon2id dengan parameter tersimpan di hash** (format PHC `$argon2id$v=19$m=…,t=…,p=…$salt$hash`): parameter bisa dinaikkan nanti tanpa mematahkan hash lama; `subtle.ConstantTimeCompare` mencegah timing attack.
+
+### Contoh — stub kecil untuk unit test service
+```go
+type stubIdem struct{ rec *domain.IdempotencyRecord }
+func (s *stubIdem) Find(context.Context, int64, string) (*domain.IdempotencyRecord, error) {
+    if s.rec == nil { return nil, domain.ErrNotFound }
+    return s.rec, nil
+}
+// test: idem.rec = &domain.IdempotencyRecord{Claim: ...RequestHash: "LAIN"}, ... → mau ErrIdempotencyConflict, Post tidak dipanggil
+```
+
+### Bukti
+```
+ok  internal/service            coverage: 84.2%   (≥ 80 % DoD)
+ok  internal/platform/token     coverage: 88.0%   (alg none, payload diubah, secret beda, kedaluwarsa → ditolak)
+ok  internal/platform/password  coverage: 83.3%
+```
+
+---
+
+## Sesi 23–24 & 27 — HTTP, main, observability, graceful shutdown (2026-09-16)
+
+### Apa
+- `transport/http/response.go`: envelope `{"data"}` / `{"error"}` dan **satu** fungsi `mapError` (error domain → kode + status).
+- `dto.go`: request/response terpisah dari domain; `decodeJSON` dengan `MaxBytesReader` 1 MB + `DisallowUnknownFields`.
+- `middleware.go`: `requestID`, `recoverer`, `logAndMeasure` (log JSON + metrik per route berpola), `authenticate` (Bearer JWT → `Actor` di context), `requireAdmin`, `rateLimitByActor`, `idempotency` (header wajib + SHA-256 body).
+- `handler_auth.go`, `handler_ledger.go`, `router.go` (chi).
+- `platform/metrics`: 8 metrik docs/03 §8; `platform/ratelimit`: jendela tetap in-memory (F-04).
+- `app/server.go`: `Serve` (graceful shutdown) + `RunPeriodic` (job drift); `app/server_test.go` = **T-13**.
+- `cmd/api/main.go`: DI manual dari bawah ke atas; pprof di `127.0.0.1:6060` hanya non-produksi; job verifikasi ledger tiap 60 s.
+
+### Kenapa
+**Handler tipis, tiga tugas saja:** parse, panggil service, terjemahkan error. Semua yang berisiko ada di service/domain yang bisa diuji tanpa server HTTP.
+
+**`mapError` adalah satu-satunya tempat status HTTP ditentukan.** Kalau tersebar di tiap handler, satu error baru berarti mengubah 10 file dan pasti ada yang terlewat → klien menerima 500 untuk kasus yang seharusnya 422. Pesan 500 tidak pernah memuat detail internal; detailnya ke log dengan `request_id`.
+
+**Kenapa `Idempotency-Key` dibaca di middleware dan body di-hash di sana:** body hanya bisa dibaca sekali. Middleware membacanya, menghitung SHA-256, lalu **mengembalikannya** ke `r.Body` supaya handler tetap bisa men-decode. Hash mencakup method + path + body: key yang sama dipakai untuk endpoint berbeda otomatis konflik (409).
+
+**`X-Request-ID` selalu dibuat server, bukan diambil dari klien.** Klien yang bisa memilih request id bisa mengacaukan penelusuran log (dua request dengan id sama).
+
+**`middleware.RealIP` sengaja TIDAK dipakai** (linter menandainya deprecated dengan CVE spoofing): ia mempercayai `X-Forwarded-For` dari siapa pun, sehingga rate limit per IP bisa dilewati hanya dengan mengirim header palsu. Tanpa proxy tepercaya, `RemoteAddr` adalah satu-satunya sumber yang jujur.
+
+**Recover middleware di posisi paling luar**, supaya panic di middleware lain pun tertangkap. Batasannya: `recover()` hanya menangkap panic di goroutine yang sama; goroutine yang dibuat handler butuh recovery sendiri.
+
+**Liveness dan readiness dipisah.** `/healthz` tidak menyentuh DB — kalau ikut mengecek DB, database yang lambat 3 detik membuat orchestrator me-restart semua pod dan memperparah beban. `/readyz` mengecek DB **dan** saklar `Readiness`: saat SIGTERM datang, saklar dimatikan dulu supaya load balancer berhenti mengirim trafik baru, baru `Shutdown` menunggu request yang sedang jalan.
+
+**Job drift ada di `cmd/api` (F-05).** Tiap 60 detik membandingkan `accounts.balance` dengan Σ entries dan trial balance, lalu menulis metrik `ledger_balance_drift_total`. Nilai selain 0 = alert keras, bukan "lihat besok pagi".
+
+**pprof di mux terpisah, alamat loopback, hanya non-produksi.** Mengimpor `net/http/pprof` biasa mendaftarkan handler ke `DefaultServeMux`; kalau server utama memakainya, `/debug/pprof` terbuka ke internet.
+
+**Rate limit fail-closed:** key kosong selalu ditolak. Lebih baik menolak satu request sah daripada membuka pintu saat ada bug.
+
+### Contoh — urutan middleware dan artinya
+```
+recoverer → requestID → logAndMeasure → Timeout(30s) → NoCache
+  └─ /auth/*            (tanpa auth)
+  └─ authenticate → /accounts/me, /transactions/*
+        └─ idempotency → topup / withdraw
+        └─ idempotency + rateLimitByActor → transfer
+        └─ requireAdmin + idempotency → {id}/reverse
+        └─ requireAdmin → /internal/ledger/trial-balance
+```
+
+### Bukti
+- T-13 (`app/server_test.go`): request 1,5 detik tetap selesai 200 saat `cancel()` dipanggil di detik 0,3; `Serve` kembali nil; koneksi baru ditolak.
+- E2E HTTP (`test/integration/http_test.go`): register/login/refresh/logout, 400 tanpa key, replay **byte-identik**, 409 conflict, 422 saldo/self/range, 404 IDOR (T-11), 403 non-admin, reversal 201 lalu 409, 413 body 2 MB, 429 rate limit, trial balance seimbang, tidak ada `account_id` internal yang bocor.
+
+### Jebakan
+1. Linter `noctx`/`contextcheck`: `net.Listen` → `(&net.ListenConfig{}).Listen(ctx, ...)`, `http.Get` → `NewRequestWithContext` + `Client.Do`. Bukan kosmetik: request tanpa context tidak bisa dibatalkan.
+2. `bodyclose`: response yang error pun bisa punya body; tutup sebelum `t.Fatal`.

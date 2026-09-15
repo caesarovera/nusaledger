@@ -5,6 +5,7 @@ package integration
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -58,14 +59,14 @@ func TestLedgerRepo_Post_Transfer(t *testing.T) {
 	assertAllInvariants(t)
 
 	// GetTransaction mengembalikan hal yang sama
-	got, err := repo.GetTransaction(ctx, res.Transaction.ID)
+	got, err := repo.GetTransaction(ctx, res.Transaction.ID, nil)
 	if err != nil {
 		t.Fatalf("GetTransaction: %v", err)
 	}
 	if got.Transaction.Type != domain.TxnTransfer || len(got.Entries) != 3 || got.Transaction.Description != "bayar kos" {
 		t.Fatalf("GetTransaction tidak cocok: %+v", got.Transaction)
 	}
-	if _, err := repo.GetTransaction(ctx, uuid.New()); !errors.Is(err, domain.ErrTransactionNotFound) {
+	if _, err := repo.GetTransaction(ctx, uuid.New(), nil); !errors.Is(err, domain.ErrTransactionNotFound) {
 		t.Fatalf("id acak: mau ErrTransactionNotFound, dapat %v", err)
 	}
 }
@@ -185,7 +186,7 @@ func TestLedgerRepo_Post_Reversal(t *testing.T) {
 	if balanceOf(t, wAndi) != 100_000*domain.Rupiah || balanceOf(t, wBudi) != 0 || balanceOf(t, sysFeeID) != 0 {
 		t.Fatalf("saldo setelah reversal harus kembali semula: andi=%s budi=%s fee=%s", balanceOf(t, wAndi), balanceOf(t, wBudi), balanceOf(t, sysFeeID))
 	}
-	got, _ := repo.GetTransaction(ctx, res.Transaction.ID)
+	got, _ := repo.GetTransaction(ctx, res.Transaction.ID, nil)
 	if got.Transaction.Status != domain.TxnReversed || len(got.Entries) != 3 {
 		t.Fatalf("transaksi asli harus REVERSED dengan entry utuh: %+v", got.Transaction)
 	}
@@ -214,7 +215,7 @@ func TestLedgerRepo_Post_Reversal(t *testing.T) {
 	if _, err := repo.Post(ctx, rev3, newClaim(admin)); !errors.Is(err, domain.ErrInsufficientBalance) {
 		t.Fatalf("T-10b: mau ErrInsufficientBalance, dapat %v", err)
 	}
-	got2, _ := repo.GetTransaction(ctx, res2.Transaction.ID)
+	got2, _ := repo.GetTransaction(ctx, res2.Transaction.ID, nil)
 	if got2.Transaction.Status != domain.TxnPosted {
 		t.Fatal("reversal yang gagal tidak boleh mengubah status transaksi asal")
 	}
@@ -238,5 +239,77 @@ func TestLedgerRepo_TrialBalanceDanDrift(t *testing.T) {
 	drift, err := repo.BalanceDrift(ctx)
 	if err != nil || drift != 0 {
 		t.Fatalf("drift mau 0, dapat %d (%v)", drift, err)
+	}
+}
+
+// T-11 (level repository): filter kepemilikan ada di WHERE. Dompet lain → tidak ditemukan, bukan 403.
+func TestLedgerRepo_GetTransaction_T11_FilterKepemilikan(t *testing.T) {
+	resetDB(t)
+	ctx := testCtx(t)
+	repo := postgres.NewLedgerRepo(testPool)
+	andi := seedUser(t, "andi@test.local", domain.RoleUser)
+	budi := seedUser(t, "budi@test.local", domain.RoleUser)
+	citra := seedUser(t, "citra@test.local", domain.RoleUser)
+	wAndi := seedWallet(t, andi, 100_000*domain.Rupiah)
+	wBudi := seedWallet(t, budi, 0)
+	wCitra := seedWallet(t, citra, 0)
+
+	txn, _ := domain.NewTransfer(wAndi, wBudi, sysFeeID, 50_000*domain.Rupiah, 1_000*domain.Rupiah, andi, "")
+	res, err := repo.Post(ctx, txn, newClaim(andi))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, viewer := range []int64{wAndi, wBudi} { // pengirim dan penerima boleh lihat
+		if _, err := repo.GetTransaction(ctx, res.Transaction.ID, &viewer); err != nil {
+			t.Fatalf("akun %d harus bisa melihat: %v", viewer, err)
+		}
+	}
+	if _, err := repo.GetTransaction(ctx, res.Transaction.ID, &wCitra); !errors.Is(err, domain.ErrTransactionNotFound) {
+		t.Fatalf("pihak ketiga: mau ErrTransactionNotFound, dapat %v", err)
+	}
+	if _, err := repo.GetTransaction(ctx, res.Transaction.ID, nil); err != nil {
+		t.Fatalf("admin (nil) harus bisa melihat: %v", err)
+	}
+}
+
+func TestUserRepo_CreateWithWalletDanRefreshToken(t *testing.T) {
+	resetDB(t)
+	ctx := testCtx(t)
+	users := postgres.NewUserRepo(testPool)
+	tokens := postgres.NewRefreshTokenRepo(testPool)
+
+	u, w, err := users.CreateWithWallet(ctx, &domain.User{Email: "andi@test.local", PasswordHash: "h", FullName: "Andi", Role: domain.RoleUser})
+	if err != nil || u.ID == 0 || w.UserID == nil || *w.UserID != u.ID || w.Type != domain.AccountUserWallet {
+		t.Fatalf("CreateWithWallet: %v %+v %+v", err, u, w)
+	}
+	if _, _, err := users.CreateWithWallet(ctx, &domain.User{Email: "ANDI@test.local", PasswordHash: "h", FullName: "Andi 2", Role: domain.RoleUser}); !errors.Is(err, domain.ErrEmailTaken) {
+		t.Fatalf("email beda huruf besar: mau ErrEmailTaken, dapat %v", err)
+	}
+	if countRows(t, "users") != 1 || countRows(t, "accounts") != 4 {
+		t.Fatalf("pendaftaran gagal harus rollback total: users=%d accounts=%d", countRows(t, "users"), countRows(t, "accounts"))
+	}
+	if got, err := users.GetByEmail(ctx, "Andi@TEST.local"); err != nil || got.ID != u.ID {
+		t.Fatalf("GetByEmail tidak peka huruf besar: %v", err)
+	}
+	if _, err := users.GetByEmail(ctx, "x@test.local"); !errors.Is(err, domain.ErrUserNotFound) {
+		t.Fatalf("mau ErrUserNotFound, dapat %v", err)
+	}
+
+	exp := time.Now().Add(time.Hour)
+	if err := tokens.Store(ctx, u.ID, "hash-1", exp); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := tokens.Find(ctx, "hash-1")
+	if err != nil || rt.UserID != u.ID || !rt.Usable(time.Now()) {
+		t.Fatalf("Find: %v %+v", err, rt)
+	}
+	if err := tokens.Revoke(ctx, "hash-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tokens.Revoke(ctx, "hash-1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("revoke kedua: mau ErrNotFound, dapat %v", err)
+	}
+	if rt, _ := tokens.Find(ctx, "hash-1"); rt.Usable(time.Now()) {
+		t.Fatal("token yang dicabut tidak boleh usable")
 	}
 }

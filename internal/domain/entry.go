@@ -14,16 +14,19 @@ type Entry struct {
 }
 
 // PostedEntry adalah entry yang sudah tercatat di ledger, dibaca untuk mutasi rekening.
+// AccountPublicID dan AccountType disertakan supaya API tidak pernah membocorkan id internal.
 type PostedEntry struct {
-	ID            int64
-	TransactionID uuid.UUID
-	AccountID     int64
-	Direction     Direction
-	Amount        Money
-	BalanceAfter  Money
-	CreatedAt     time.Time
-	TxnType       TxnType
-	Description   string
+	ID              int64
+	TransactionID   uuid.UUID
+	AccountID       int64
+	AccountPublicID uuid.UUID
+	AccountType     AccountType
+	Direction       Direction
+	Amount          Money
+	BalanceAfter    Money
+	CreatedAt       time.Time
+	TxnType         TxnType
+	Description     string
 }
 
 // BalanceDelta menghitung perubahan saldo satu entry terhadap akunnya.

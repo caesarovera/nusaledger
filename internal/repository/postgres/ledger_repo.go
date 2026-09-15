@@ -22,12 +22,13 @@ func NewLedgerRepo(db *pgxpool.Pool) *LedgerRepo { return &LedgerRepo{db: db} }
 
 // lockedAccount adalah baris accounts yang sudah dikunci FOR UPDATE.
 type lockedAccount struct {
-	ID            int64  `db:"id"`
-	Balance       int64  `db:"balance"`
-	Version       int64  `db:"version"`
-	Status        string `db:"status"`
-	NormalBalance string `db:"normal_balance"`
-	AccountType   string `db:"account_type"`
+	ID            int64     `db:"id"`
+	PublicID      uuid.UUID `db:"public_id"`
+	Balance       int64     `db:"balance"`
+	Version       int64     `db:"version"`
+	Status        string    `db:"status"`
+	NormalBalance string    `db:"normal_balance"`
+	AccountType   string    `db:"account_type"`
 }
 
 // Post memposting transaksi secara ATOMIK: klaim idempotency, kunci akun terurut,
@@ -63,7 +64,7 @@ func (r *LedgerRepo) Post(ctx context.Context, txn *domain.Transaction, claim do
 	// 2. Kunci semua akun terlibat, TERURUT berdasarkan id → transfer silang antre, bukan deadlock.
 	ids := txn.AccountIDs()
 	rows, err := tx.Query(ctx, `
-		SELECT id, balance, version, status, normal_balance, account_type
+		SELECT id, public_id, balance, version, status, normal_balance, account_type
 		FROM accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("kunci akun: %w", err)
@@ -142,8 +143,9 @@ func (r *LedgerRepo) Post(ctx context.Context, txn *domain.Transaction, claim do
 			return nil, fmt.Errorf("insert entry: %w", translate(err))
 		}
 		posted = append(posted, domain.PostedEntry{
-			ID: entryID, TransactionID: txnID, AccountID: e.AccountID, Direction: e.Direction,
-			Amount: e.Amount, BalanceAfter: domain.Money(newBalance), CreatedAt: entryAt,
+			ID: entryID, TransactionID: txnID, AccountID: e.AccountID,
+			AccountPublicID: acc.PublicID, AccountType: domain.AccountType(acc.AccountType),
+			Direction: e.Direction, Amount: e.Amount, BalanceAfter: domain.Money(newBalance), CreatedAt: entryAt,
 			TxnType: txn.Type, Description: txn.Description,
 		})
 	}
@@ -179,12 +181,18 @@ func (r *LedgerRepo) Post(ctx context.Context, txn *domain.Transaction, claim do
 }
 
 // GetTransaction mengambil transaksi beserta semua entry-nya.
-func (r *LedgerRepo) GetTransaction(ctx context.Context, id uuid.UUID) (*domain.PostResult, error) {
+// visibleTo nil = tanpa filter (ADMIN). Selain itu hanya transaksi yang menyentuh akun
+// tersebut yang terlihat — difilter di WHERE, bukan di aplikasi (BR-12): data milik
+// orang lain tidak pernah keluar dari database.
+func (r *LedgerRepo) GetTransaction(ctx context.Context, id uuid.UUID, visibleTo *int64) (*domain.PostResult, error) {
 	txn := &domain.Transaction{}
 	var txnType, status string
 	err := r.db.QueryRow(ctx, `
-		SELECT id, txn_type, status, description, initiated_by_user_id, reverses_transaction_id, created_at
-		FROM transactions WHERE id = $1`, id).
+		SELECT t.id, t.txn_type, t.status, t.description, t.initiated_by_user_id, t.reverses_transaction_id, t.created_at
+		FROM transactions t
+		WHERE t.id = $1
+		  AND ($2::BIGINT IS NULL OR EXISTS (
+		        SELECT 1 FROM entries e WHERE e.transaction_id = t.id AND e.account_id = $2))`, id, visibleTo).
 		Scan(&txn.ID, &txnType, &status, &txn.Description, &txn.InitiatedBy, &txn.ReversesID, &txn.CreatedAt)
 	if err != nil {
 		if translate(err) == domain.ErrNotFound { //nolint:errorlint
@@ -195,8 +203,9 @@ func (r *LedgerRepo) GetTransaction(ctx context.Context, id uuid.UUID) (*domain.
 	txn.Type, txn.Status = domain.TxnType(txnType), domain.TxnStatus(status)
 
 	rows, err := r.db.Query(ctx, `
-		SELECT id, account_id, direction, amount, balance_after, created_at
-		FROM entries WHERE transaction_id = $1 ORDER BY id`, id)
+		SELECT e.id, e.account_id, a.public_id, a.account_type, e.direction, e.amount, e.balance_after, e.created_at
+		FROM entries e JOIN accounts a ON a.id = e.account_id
+		WHERE e.transaction_id = $1 ORDER BY e.id`, id)
 	if err != nil {
 		return nil, fmt.Errorf("ambil entries %s: %w", id, err)
 	}
@@ -205,12 +214,13 @@ func (r *LedgerRepo) GetTransaction(ctx context.Context, id uuid.UUID) (*domain.
 	var posted []domain.PostedEntry
 	for rows.Next() {
 		var e domain.PostedEntry
-		var dir string
+		var dir, accType string
 		var amount, after int64
-		if err := rows.Scan(&e.ID, &e.AccountID, &dir, &amount, &after, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.AccountID, &e.AccountPublicID, &accType, &dir, &amount, &after, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan entry: %w", err)
 		}
-		e.TransactionID, e.Direction, e.Amount, e.BalanceAfter = id, domain.Direction(dir), domain.Money(amount), domain.Money(after)
+		e.TransactionID, e.AccountType = id, domain.AccountType(accType)
+		e.Direction, e.Amount, e.BalanceAfter = domain.Direction(dir), domain.Money(amount), domain.Money(after)
 		e.TxnType, e.Description = txn.Type, txn.Description
 		txn.Entries = append(txn.Entries, domain.Entry{AccountID: e.AccountID, Direction: e.Direction, Amount: e.Amount})
 		posted = append(posted, e)
@@ -273,12 +283,14 @@ type storedResult struct {
 }
 
 type storedEntry struct {
-	ID           int64     `json:"id"`
-	AccountID    int64     `json:"account_id"`
-	Direction    string    `json:"direction"`
-	AmountSen    int64     `json:"amount_sen"`
-	BalanceAfter int64     `json:"balance_after_sen"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID              int64     `json:"id"`
+	AccountID       int64     `json:"account_id"`
+	AccountPublicID uuid.UUID `json:"account_public_id"`
+	AccountType     string    `json:"account_type"`
+	Direction       string    `json:"direction"`
+	AmountSen       int64     `json:"amount_sen"`
+	BalanceAfter    int64     `json:"balance_after_sen"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 func toStored(p *domain.PostResult) storedResult {
@@ -290,8 +302,8 @@ func toStored(p *domain.PostResult) storedResult {
 	}
 	for _, e := range p.Entries {
 		s.Entries = append(s.Entries, storedEntry{
-			ID: e.ID, AccountID: e.AccountID, Direction: string(e.Direction),
-			AmountSen: int64(e.Amount), BalanceAfter: int64(e.BalanceAfter), CreatedAt: e.CreatedAt,
+			ID: e.ID, AccountID: e.AccountID, AccountPublicID: e.AccountPublicID, AccountType: string(e.AccountType),
+			Direction: string(e.Direction), AmountSen: int64(e.Amount), BalanceAfter: int64(e.BalanceAfter), CreatedAt: e.CreatedAt,
 		})
 	}
 	return s
@@ -306,9 +318,10 @@ func fromStored(s storedResult) *domain.PostResult {
 	for _, e := range s.Entries {
 		txn.Entries = append(txn.Entries, domain.Entry{AccountID: e.AccountID, Direction: domain.Direction(e.Direction), Amount: domain.Money(e.AmountSen)})
 		posted = append(posted, domain.PostedEntry{
-			ID: e.ID, TransactionID: s.TransactionID, AccountID: e.AccountID, Direction: domain.Direction(e.Direction),
-			Amount: domain.Money(e.AmountSen), BalanceAfter: domain.Money(e.BalanceAfter), CreatedAt: e.CreatedAt,
-			TxnType: txn.Type, Description: txn.Description,
+			ID: e.ID, TransactionID: s.TransactionID, AccountID: e.AccountID,
+			AccountPublicID: e.AccountPublicID, AccountType: domain.AccountType(e.AccountType),
+			Direction: domain.Direction(e.Direction), Amount: domain.Money(e.AmountSen), BalanceAfter: domain.Money(e.BalanceAfter),
+			CreatedAt: e.CreatedAt, TxnType: txn.Type, Description: txn.Description,
 		})
 	}
 	return &domain.PostResult{Transaction: txn, Entries: posted}

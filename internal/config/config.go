@@ -36,6 +36,7 @@ type Config struct {
 
 	ShutdownWait       time.Duration `env:"SHUTDOWN_WAIT" envDefault:"30s"`
 	DriftCheckInterval time.Duration `env:"DRIFT_CHECK_INTERVAL" envDefault:"60s"`
+	RunMigrations      bool          `env:"RUN_MIGRATIONS" envDefault:"false"` // true di compose; produksi memakai langkah migrasi terpisah
 
 	// Rate limit (in-memory di Fase 1, lihat docs/06 F-04)
 	LoginRateLimit     int           `env:"LOGIN_RATE_LIMIT" envDefault:"5"`

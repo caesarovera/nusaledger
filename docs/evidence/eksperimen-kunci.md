@@ -13,21 +13,11 @@ concurrency_test.go:190: terjadi 98 deadlock — urutan penguncian rusak
 --- FAIL: TestConcurrency_T07_TransferSilangTanpaDeadlock (9.12s)
 ```
 
-## Varian B — tanpa `FOR UPDATE` DAN tanpa `version`
+## Varian B — tanpa `FOR UPDATE` DAN tanpa `version` (SQL dan argumen Go diubah bersama)
 
 ```
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
-concurrency_test.go:74: error tak terduga: update saldo akun 4: expected 2 arguments, got 3
+concurrency_test.go:77: sukses=19 saldo_kurang=81 konflik=0 saldo_pengirim=Rp 31000,00
+--- PASS: TestConcurrency_T04_TransferParalelDariSatuAkun (0.38s)
+concurrency_test.go:190: terjadi 99 deadlock — urutan penguncian rusak
+--- FAIL: TestConcurrency_T07_TransferSilangTanpaDeadlock (11.10s)
 ```
