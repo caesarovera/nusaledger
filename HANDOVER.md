@@ -31,3 +31,11 @@ G-1 dilakukan inline saat menulis migration. G-2 dan G-3 (review Fable read-only
 
 ## Belum diputuskan
 - Username GitHub untuk module path (asumsi: caesarovera).
+
+## Update — push pertama & CI (2026-09-16)
+
+`gh` CLI sudah terpasang sebelumnya (v2.101.0, `C:\Program Files\GitHub CLI\gh.exe`) dan sudah login sebagai `caesarovera` (scope repo, workflow). Remote `origin` ditambahkan ke `https://github.com/caesarovera/nusaledger.git` (repo publik, sudah dibuat kosong oleh pemilik), lalu `git push -u origin main`.
+
+CI (`.github/workflows/ci.yml`) otomatis terpicu dan **lulus semua 4 job di percobaan pertama**: lint (50s) → unit (1m3s) → integration termasuk T-04×3 (1m17s) → image <20MB (53s). Link: https://github.com/caesarovera/nusaledger/actions/runs/35033810565
+
+Catatan: annotation "Node.js 20 deprecated" pada tiga job — bukan kegagalan, GitHub Actions runner otomatis fallback ke Node 24. Tidak perlu ditindaklanjuti kecuali actions/checkout atau setup-go merilis versi yang mensyaratkan update.
