@@ -630,3 +630,68 @@ recoverer → requestID → logAndMeasure → Timeout(30s) → NoCache
 ### Jebakan
 1. Linter `noctx`/`contextcheck`: `net.Listen` → `(&net.ListenConfig{}).Listen(ctx, ...)`, `http.Get` → `NewRequestWithContext` + `Client.Do`. Bukan kosmetik: request tanpa context tidak bisa dibatalkan.
 2. `bodyclose`: response yang error pun bisa punya body; tutup sebelum `t.Fatal`.
+3. Di test E2E, `?cursor=%%%` tidak pernah sampai ke handler: parser URL Go membuang pasangan query yang percent-encoding-nya rusak. Uji cursor rusak harus memakai nilai yang valid sebagai URL tapi bukan base64url.
+4. Counter Prometheus berlabel (`http_requests_total{...}`) baru muncul di `/metrics` setelah kombinasi labelnya pernah terjadi; gauge muncul sejak awal. Test yang memeriksa `/metrics` harus memicu satu request dulu.
+
+---
+
+## Sesi 28 — Dockerfile, compose lengkap, CI (2026-09-16)
+
+### Apa
+- `Dockerfile` multi-stage: `golang:1.27-alpine` → `gcr.io/distroless/static-debian12:nonroot`. Hasil: **18,6 MB**.
+- `docker-compose.yml`: service `api` (build dari Dockerfile, `RUN_MIGRATIONS=true`, `depends_on: postgres: condition: service_healthy`) + `postgres`.
+- `.dockerignore`, `.github/workflows/ci.yml` (lint+govulncheck → unit+coverage gate → integration+T-04×3 → build image < 20 MB).
+- Smoke test dari nol: `docker compose down -v && docker compose up -d` → `/readyz` 200 dalam ~4 detik → register/login/topup/transfer lewat curl. Transkrip: `docs/evidence/smoke-compose.md`.
+
+### Kenapa
+**Setiap baris Dockerfile ada alasannya:** `COPY go.mod go.sum` terpisah supaya layer dependency tidak batal saat kode berubah; `--mount=type=cache` menyimpan modul & build cache antar build; `CGO_ENABLED=0` menghasilkan binary statis yang jalan tanpa libc; `-trimpath` membuang path absolut mesin build; `-ldflags "-s -w"` membuang symbol table; `distroless/static` tidak punya shell maupun package manager — kalaupun penyerang bisa mengeksekusi kode, tidak ada `sh` untuk dipanggil; `USER nonroot`.
+
+**Migrasi dijalankan API saat start hanya di compose (`RUN_MIGRATIONS=true`).** Di produksi, migrasi adalah langkah deploy terpisah yang di-review, bukan efek samping start aplikasi (dua instance yang start bersamaan bisa berebut).
+
+**`depends_on: condition: service_healthy`**, bukan `sleep 5`. Healthcheck `pg_isready` adalah kebenaran; `sleep` adalah tebakan yang suatu hari salah.
+
+**CI mengulang T-04 tiga kali** dan menolak image di atas 20 MB serta coverage domain < 90 % — Definition of Done ditegakkan mesin, bukan diingat manusia.
+
+### Jebakan (dan pola yang berulang)
+Port **8080** di host sudah dipakai layanan lain (laragon), persis seperti 5432 sebelumnya: request ke `localhost:8080` dijawab "Not found." oleh server yang salah. Gejalanya bukan "connection refused" tetapi jawaban yang tidak masuk akal. Solusi: compose memetakan **8081 → 8080**. Pelajaran umum: kalau jawabannya aneh, tanya dulu *"saya bicara dengan proses yang mana?"* (`netstat -ano | grep :8080`).
+
+### Bukti
+`docs/evidence/smoke-compose.md`: image 18,6 MB; readyz 4 detik; 400 tanpa key; retry byte-identik; 409 conflict; 422 di bawah minimum; 401 tanpa token; 404 id acak; metrik `ledger_balance_drift_total 0`; satu baris log JSON dengan `request_id`, `user_id`, `route`, `status`, `duration_ms`.
+
+---
+
+## Sesi 29 — Load test k6: benar dulu, baru cepat (2026-09-16)
+
+### Apa
+`test/load/transfer.js` (100 VU, 3 menit, transfer Rp 10.000 antar 50 dompet, key baru tiap iterasi) terhadap `docker compose` dengan override `docker-compose.load.yml`. Setelah selesai: trial balance, drift, fee dihitung ulang. Hasil di `docs/evidence/k6.md`.
+
+### Kenapa
+**Load test selalu diakhiri verifikasi ledger.** Angka p95 yang bagus pada sistem yang menciptakan uang tidak berarti apa-apa. Yang diverifikasi: Σdebit = Σkredit, `accounts.balance` = Σ entries, tidak ada dompet negatif, fee terkumpul = jumlah transfer × Rp 1.000 **persis**.
+
+**Override rate limit hanya untuk load test.** Run pertama tanpa override: 99,98 % request ditolak 401/429 — bukan bug, tapi pembatas login (5/15 menit per IP) dan transfer (20/menit per user) yang bekerja sesuai desain. Load test mengukur ledger, jadi pembatas dinaikkan lewat file override yang terpisah dan terdokumentasi, bukan dengan mengubah default.
+
+### Hasil — dan pelajaran terpenting sesi ini
+| | Target | Hasil |
+|---|---|---|
+| Correctness (33.340 transfer) | 100 % | ✅ trial balance 0, drift 0, fee tepat |
+| Error rate | < 1 % | ✅ 0 % |
+| Throughput | ≥ 200/s | ❌ 177/s |
+| p95 / p99 | < 200 / 500 ms | ❌ 515 / 568 ms |
+
+**Kenapa lambat — dan kenapa ini ditulis apa adanya:** setiap transfer mengunci tiga akun: pengirim, penerima, dan `SYSTEM_FEE_REVENUE`. Akun fee itu **sama untuk semua transfer**, jadi `FOR UPDATE` membuat seluruh sistem antre pada satu baris. Throughput maksimum = 1 ÷ (durasi satu transaksi DB termasuk fsync). Di Docker Desktop Windows dengan k6, API, dan Postgres di satu laptop, itu ≈ 180/detik.
+
+Ini bukan bug: ini **konsekuensi desain yang benar untuk correctness** dan baru terlihat saat diukur. Jawaban wawancaranya: *"Saya memilih satu akun fee karena sederhana dan auditable; load test menunjukkan ia jadi baris panas pada 177 tps. Kalau trafik 10×, saya akan memecah fee ke N sub-akun (sharding) atau mengakumulasi fee per periode, karena kontensi tidak bisa diselesaikan dengan index — hanya dengan mengurangi hal yang diperebutkan."*
+
+### Jebakan
+1. k6 `http_req_failed` menghitung semua status ≥ 400 sebagai gagal; 422 (saldo kurang) itu sah. Pakai `http.setResponseCallback(http.expectedStatuses(201, 422))`.
+2. `setup()` k6 harus **gagal cepat** (`fail()`) kalau login tidak 200; kalau tidak, VU berjalan dengan token kosong dan hasilnya menyesatkan.
+3. Token admin untuk verifikasi harus dibuat **setelah** load test dengan login baru — token 15 menit bisa kedaluwarsa.
+
+### Bukti
+`docs/evidence/k6.md` + `docs/evidence/k6-summary.json`.
+
+---
+
+## Status akhir sesi (2026-09-16, dihentikan atas permintaan pemilik)
+
+Sesi 1–29 selesai; Sesi 30 (security review, G-3, tag) belum. Ringkasan bukti ada di README §Hasil Pengujian. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.

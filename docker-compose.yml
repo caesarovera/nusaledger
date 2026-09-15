@@ -1,4 +1,27 @@
 services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nusaledger-api
+    environment:
+      ADDR: ":8080"
+      APP_ENV: development
+      LOG_LEVEL: info
+      # di dalam jaringan compose, host-nya adalah nama service dan port container (5432)
+      DATABASE_URL: postgres://nusa:nusa_dev_only@postgres:5432/nusaledger?sslmode=disable
+      # DEV SAJA. Di produksi: secret manager, minimal 32 byte acak.
+      JWT_SECRET: dev-only-secret-ganti-di-produksi-minimal-32-byte
+      RUN_MIGRATIONS: "true"
+      DRIFT_CHECK_INTERVAL: 30s
+    ports:
+      # Host 8081 → container 8080. Port 8080 di mesin dev sudah dipakai layanan lain (laragon).
+      - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy   # tunggu pg_isready, bukan sleep
+    restart: unless-stopped
+
   postgres:
     image: postgres:17-alpine
     container_name: nusaledger-postgres

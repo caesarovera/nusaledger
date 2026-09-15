@@ -1,0 +1,81 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=readonly
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.13.2
+          args: --build-tags integration
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: unit test + race + coverage
+        run: |
+          go test -race -count=1 -coverprofile=coverage.out ./internal/...
+          go tool cover -func=coverage.out | tail -n 1
+      - name: coverage gate (domain >= 90%, service >= 80%)
+        run: |
+          dom=$(go tool cover -func=coverage.out | awk '/internal\/domain\//{s+=$3; n++} END{print s/n}')
+          echo "domain avg: $dom"
+          go test -cover ./internal/domain/... ./internal/service/... | tee /tmp/cov.txt
+          grep 'internal/domain' /tmp/cov.txt | grep -Eo '[0-9]+\.[0-9]+%' | awk -F% '{ if ($1 < 90) { print "domain coverage < 90%"; exit 1 } }'
+          grep 'internal/service' /tmp/cov.txt | grep -Eo '[0-9]+\.[0-9]+%' | awk -F% '{ if ($1 < 80) { print "service coverage < 80%"; exit 1 } }'
+
+  integration:
+    runs-on: ubuntu-latest   # Docker tersedia untuk testcontainers
+    needs: [unit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: integration test (testcontainers) + race
+        run: go test -tags=integration -race -count=1 ./test/...
+      - name: T-04 diulang 3x (bug konkurensi sering lolos sekali)
+        run: go test -tags=integration -race -count=3 -run 'TestConcurrency_T04' ./test/...
+
+  image:
+    runs-on: ubuntu-latest
+    needs: [lint, integration]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: nusaledger:${{ github.sha }}
+          build-args: VERSION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: image < 20 MB
+        run: |
+          size=$(docker image inspect nusaledger:${{ github.sha }} --format '{{.Size}}')
+          echo "ukuran: $((size/1024/1024)) MB"
+          test "$size" -lt $((20*1024*1024))

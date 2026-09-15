@@ -1,0 +1,10 @@
+# Override untuk LOAD TEST saja:
+#   docker compose -f docker-compose.yml -f docker-compose.load.yml up -d
+# Rate limit dinaikkan supaya yang diukur adalah throughput ledger, bukan pembatas laju.
+# Pada run pertama tanpa override, 99,98 % request ditolak 401/429 — bukti pembatas bekerja,
+# tetapi bukan angka latensi transfer yang ingin diukur (lihat docs/evidence/k6.md).
+services:
+  api:
+    environment:
+      LOGIN_RATE_LIMIT: "100000"
+      TRANSFER_RATE_LIMIT: "100000"

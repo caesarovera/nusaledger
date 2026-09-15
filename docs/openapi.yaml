@@ -1,0 +1,401 @@
+openapi: 3.1.0
+info:
+  title: NusaLedger API
+  version: 1.0.0
+  description: |
+    Ledger double-entry untuk dompet digital. **Simulasi teknis, bukan produk keuangan.**
+
+    Konvensi:
+    - Semua nominal dalam **sen** (Rp 1 = 100) dan bernama `*_sen`.
+    - Id publik selalu UUID; id internal tidak pernah keluar.
+    - Operasi uang wajib header `Idempotency-Key` (1–128 karakter). Key sama + body sama → respons identik; key sama + body beda → 409.
+    - Respons sukses dibungkus `{"data": ...}`; error dibungkus `{"error": {code, message, fields, request_id}}`.
+servers:
+  - url: http://localhost:8080/api/v1
+tags:
+  - name: auth
+  - name: accounts
+  - name: transactions
+  - name: internal
+  - name: ops
+
+paths:
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Daftar pengguna baru (dompet dibuat otomatis)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, full_name]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8, maxLength: 128 }
+                full_name: { type: string, maxLength: 100 }
+      responses:
+        "201":
+          description: Pengguna dan dompet dibuat
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      user: { $ref: "#/components/schemas/User" }
+                      wallet: { $ref: "#/components/schemas/Account" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Login → access token (15 menit) + refresh token (30 hari)
+      description: Pesan gagal selalu sama untuk email tidak ada maupun password salah. Dibatasi 5 percobaan / 15 menit per email dan per IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/TokenPair" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Tukar refresh token dengan pasangan baru (token lama dicabut)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/TokenPair" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Cabut refresh token
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "204": { description: Token dicabut (idempoten) }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /accounts/me:
+    get:
+      tags: [accounts]
+      summary: Dompet pemanggil
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Dompet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/Account" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /accounts/me/entries:
+    get:
+      tags: [accounts]
+      summary: Mutasi dompet pemanggil (cursor pagination, terbaru dulu)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - in: query
+          name: cursor
+          description: Nilai `next_cursor` dari halaman sebelumnya (opaque)
+          schema: { type: string }
+      responses:
+        "200":
+          description: Satu halaman mutasi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Entry" }
+                  next_cursor:
+                    type: [string, "null"]
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+
+  /transactions/topup:
+    post:
+      tags: [transactions]
+      summary: Isi saldo (simulasi)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { $ref: "#/components/requestBodies/Money" }
+      responses:
+        "201": { $ref: "#/components/responses/Transaction" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /transactions/withdraw:
+    post:
+      tags: [transactions]
+      summary: Tarik dana (simulasi)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { $ref: "#/components/requestBodies/Money" }
+      responses:
+        "201": { $ref: "#/components/responses/Transaction" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /transactions/transfer:
+    post:
+      tags: [transactions]
+      summary: Transfer antar dompet (biaya admin flat, min Rp 10.000, maks Rp 50.000.000)
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to_account_public_id, amount_sen]
+              properties:
+                to_account_public_id: { type: string, format: uuid }
+                amount_sen: { type: integer, format: int64, minimum: 1 }
+                description: { type: string, maxLength: 255 }
+      responses:
+        "201": { $ref: "#/components/responses/Transaction" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /transactions/{id}:
+    get:
+      tags: [transactions]
+      summary: Detail transaksi beserta semua entry
+      description: USER hanya bisa melihat transaksi yang menyentuh dompetnya; selain itu 404 (bukan 403, agar keberadaan transaksi tidak bocor). ADMIN melihat semua.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/TransactionID" }]
+      responses:
+        "200": { $ref: "#/components/responses/Transaction" }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /transactions/{id}/reverse:
+    post:
+      tags: [transactions]
+      summary: Pembatalan (ADMIN) — membuat transaksi kebalikan, transaksi asli utuh
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/TransactionID" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description: { type: string, maxLength: 255 }
+      responses:
+        "201": { $ref: "#/components/responses/Transaction" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /internal/ledger/trial-balance:
+    get:
+      tags: [internal]
+      summary: Bukti ledger seimbang (ADMIN)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Σ debit, Σ kredit, selisih (harus 0)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      total_debit_sen: { type: integer, format: int64 }
+                      total_credit_sen: { type: integer, format: int64 }
+                      difference_sen: { type: integer, format: int64 }
+                      entry_count: { type: integer, format: int64 }
+                      balanced: { type: boolean }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+      description: Kunci unik dari klien (disarankan UUID v4). Berlaku per pengguna.
+    TransactionID:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, format: uuid }
+
+  requestBodies:
+    Money:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [amount_sen]
+            properties:
+              amount_sen: { type: integer, format: int64, minimum: 1 }
+              description: { type: string, maxLength: 255 }
+
+  schemas:
+    User:
+      type: object
+      properties:
+        public_id: { type: string, format: uuid }
+        email: { type: string }
+        full_name: { type: string }
+        role: { type: string, enum: [USER, ADMIN] }
+        created_at: { type: string, format: date-time }
+    Account:
+      type: object
+      properties:
+        public_id: { type: string, format: uuid }
+        type: { type: string, enum: [USER_WALLET, SYSTEM_CASH, SYSTEM_FEE_REVENUE, SYSTEM_SUSPENSE] }
+        status: { type: string, enum: [ACTIVE, FROZEN, CLOSED] }
+        currency: { type: string, const: IDR }
+        balance_sen: { type: integer, format: int64 }
+        updated_at: { type: string, format: date-time }
+    Entry:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        transaction_id: { type: string, format: uuid }
+        account_public_id: { type: string, format: uuid }
+        account_type: { type: string }
+        direction: { type: string, enum: [DEBIT, CREDIT] }
+        amount_sen: { type: integer, format: int64 }
+        balance_after_sen: { type: integer, format: int64 }
+        txn_type: { type: string, enum: [TOPUP, TRANSFER, WITHDRAW, REVERSAL] }
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+    Transaction:
+      type: object
+      properties:
+        transaction_id: { type: string, format: uuid }
+        type: { type: string, enum: [TOPUP, TRANSFER, WITHDRAW, REVERSAL] }
+        status: { type: string, enum: [POSTED, REVERSED] }
+        description: { type: string }
+        amount_sen: { type: integer, format: int64, description: Nominal utama operasi }
+        fee_sen: { type: integer, format: int64, description: Total biaya admin }
+        reverses_transaction_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/Entry" }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [VALIDATION_ERROR, IDEMPOTENCY_KEY_REQUIRED, UNAUTHENTICATED, FORBIDDEN, ACCOUNT_NOT_FOUND, TRANSACTION_NOT_FOUND, NOT_FOUND, EMAIL_TAKEN, IDEMPOTENCY_CONFLICT, IDEMPOTENCY_IN_FLIGHT, ALREADY_REVERSED, CONCURRENT_MODIFICATION, PAYLOAD_TOO_LARGE, INSUFFICIENT_BALANCE, ACCOUNT_NOT_ACTIVE, SELF_TRANSFER, AMOUNT_OUT_OF_RANGE, RATE_LIMITED, TIMEOUT, INTERNAL_ERROR]
+            message: { type: string }
+            fields:
+              type: [object, "null"]
+              additionalProperties: { type: string }
+            request_id: { type: string }
+
+  responses:
+    TokenPair:
+      description: Pasangan token
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, const: Bearer }
+                  access_expires_at: { type: string, format: date-time }
+                  refresh_token: { type: string }
+                  refresh_expires_at: { type: string, format: date-time }
+    Transaction:
+      description: Transaksi
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { $ref: "#/components/schemas/Transaction" }
+    ValidationError:
+      description: 400 — format request salah / header Idempotency-Key hilang
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unauthenticated:
+      description: 401 — token tidak ada / invalid / kedaluwarsa, atau kredensial salah
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Forbidden:
+      description: 403 — peran tidak mencukupi
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    NotFound:
+      description: 404
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Conflict:
+      description: 409 — IDEMPOTENCY_CONFLICT, IDEMPOTENCY_IN_FLIGHT (Retry-After 1), ALREADY_REVERSED, CONCURRENT_MODIFICATION, EMAIL_TAKEN
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unprocessable:
+      description: 422 — INSUFFICIENT_BALANCE, ACCOUNT_NOT_ACTIVE, SELF_TRANSFER, AMOUNT_OUT_OF_RANGE
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    RateLimited:
+      description: 429
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }

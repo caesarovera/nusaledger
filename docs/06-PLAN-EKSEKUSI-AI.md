@@ -407,3 +407,19 @@ Cadangan (bukan sesi terjadwal): `/simplify` setelah sesi 24 dan 27; `explorer` 
 2. Sesi 2: bootstrap repo `nusaledger/` + salin docs 00–06 + pasang `.claude/` (§3). Commit pertama.
 3. Perbaiki F-01, F-02, F-03 dan K-01 di `docs/02` dan `docs/03` sebelum sesi 4, supaya agent membaca sumber yang sudah benar.
 4. Lanjut tabel §5 secara berurutan. Jangan lompat ke HTTP sebelum T-04 hijau — itu kesalahan urutan yang dokumen 05 peringatkan di baris terakhirnya.
+
+---
+
+## 10. Status Eksekusi (diperbarui 2026-09-16)
+
+| Sesi | Status | Catatan |
+|---|---|---|
+| 1–9 (Minggu 1) | ✅ | Alat, repo, skema + 18 uji trigger, domain 99 % coverage. Go 1.27 (bukan 1.25). Port DB 5433. |
+| 10 (G-1) | ✅ inline | Dilakukan sesi utama saat menulis migration: `chk_owner`, `chk_reversal_link`, `uq_entry_account_per_txn`, CONSTRAINT name pada RAISE. |
+| 11–17 (Minggu 2) | ✅ | `LedgerRepo.Post`, harness testcontainers, EXPLAIN 0,49 ms @200k, T-02/03/08/09. Review DBA (17) dilakukan inline. |
+| 18–25 (Minggu 3) | ✅ | Service, auth, HTTP, T-04 (19 sukses ×5), T-05, T-06, T-07 (0 deadlock), T-10/10b, T-11, T-12 (ctx via Timeout middleware), eksperimen kunci (temuan berbeda dari dugaan dokumen). |
+| 26 (G-2) | ⏳ belum | Review Fable read-only atas `Post` + konkurensi belum dijalankan formal. |
+| 27–29 (Minggu 4) | ✅ | T-13, Docker 18,6 MB, compose ready 4 s, CI, OpenAPI, k6. **SLO latensi tidak tercapai** (177 tps, p95 515 ms) — penyebab: baris panas akun fee. Correctness 100 %. |
+| 30 (G-3, security review, tag) | ⏳ belum | Dihentikan atas permintaan pemilik proyek. |
+
+Penyimpangan dari plan yang perlu diketahui: port API host 8081 (8080 dipakai laragon); `misspell` dimatikan; `middleware.RealIP` sengaja tidak dipakai; `docker-compose.load.yml` untuk k6.
