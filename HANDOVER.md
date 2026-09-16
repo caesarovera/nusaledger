@@ -93,10 +93,9 @@ Coverage: domain 99,1 %, service 84,2 %. Bukti lengkap di `docs/evidence/`. Jurn
 **G-3** (Fable, read-only, release gate): kesimpulan **YA-DENGAN-CATATAN**. Satu temuan ditindaklanjuti sebelum tag: `/auth/register` tanpa rate limit (argon2id mahal, vektor DoS ringan) → ditambah `rateLimitByIP` + `REGISTER_RATE_LIMIT` (default 10/15 menit). Temuan minor lain (limiter login per email, `/metrics` publik, penamaan `ErrInvalidReversalLink` untuk constraint accounts) diterima sebagai trade-off Fase 1, dicatat di README.
 
 ## Berikutnya
-**Fase 1 SELESAI TOTAL** (v1.0.3, sudah di-tag). **Fase 2 SEKARANG SELESAI TOTAL JUGA** — outbox relay, role DB terbatas, rate limit Redis, pembatasan jaringan `/metrics`, semua selesai dan terverifikasi. Tidak ada item Fase 2 yang tersisa.
-1. **Pertimbangkan tag `v1.1.0`** untuk memuat seluruh Fase 2 (`cmd/worker`, migration `000010` & `000011`, `RedisLimiter`, `docs/deploy-metrics-network.md`) — versi minor, bukan `v1.0.4`.
-2. Satu-satunya item lama yang masih terbuka di seluruh proyek: pengukuran ulang k6 di Linux native untuk menutup selisih p95 10 ms dari Sesi 33 (bukan blocker, dicatat sadar sebagai keterbatasan Docker Desktop Windows).
-3. Tidak ada rencana Fase 3 yang dikunci — kalau diminta melanjutkan lagi, tanyakan dulu arah yang diinginkan (Fase 2 tidak punya PRD sejak awal; sudah dikerjakan atas asumsi eksplisit yang dicatat di jurnal Sesi 34).
+**Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SELESAI TOTAL** (tag `v1.2.0`, sudah di-push ke GitHub) — outbox relay, role DB terbatas, rate limit Redis, pembatasan jaringan `/metrics`, semua selesai dan terverifikasi. Jurnal juga sudah ditutup lubangnya (Sesi 38–39: setup GitHub/push/CI, identitas git). Tidak ada item Fase 1/Fase 2 yang tersisa.
+1. Satu-satunya item lama yang masih terbuka di seluruh proyek: pengukuran ulang k6 di Linux native untuk menutup selisih p95 10 ms dari Sesi 33. **Bukan blocker**, dan mesin ini TIDAK punya distro WSL2 biasa (hanya `docker-desktop` internal) — mengerjakan ini butuh memasang distro (mis. Ubuntu) dulu, keputusan infrastruktur yang lebih baik ditanyakan, bukan diasumsikan.
+2. Tidak ada rencana Fase 3 yang dikunci — kalau diminta melanjutkan lagi, tanyakan dulu arah yang diinginkan (Fase 2 tidak punya PRD sejak awal; sudah dikerjakan atas asumsi eksplisit yang dicatat di jurnal Sesi 34).
 
 ## Keputusan yang sudah diambil
 - Semua keputusan docs/06 §2 (F-01…F-06, K-01…K-09) DISETUJUI pemilik proyek pada 2026-09-16.
