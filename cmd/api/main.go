@@ -101,6 +101,7 @@ func run() error {
 		Ready:           pool.Ping,
 		Readiness:       readiness,
 		Timeout:         30 * time.Second,
+		Prod:            cfg.IsProduction(),
 	})
 	srv := &http.Server{
 		Handler:           router,

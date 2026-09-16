@@ -182,7 +182,12 @@ func expect(t *testing.T, r resp, status int, code string) {
 
 func TestHTTP_Operasional(t *testing.T) {
 	s := newAPIServer(t, serverOpts{})
-	expect(t, s.do("GET", "/healthz", nil, nil), 200, "")
+	hz := s.do("GET", "/healthz", nil, nil)
+	expect(t, hz, 200, "")
+	// Header keamanan dipasang di ROOT router: /healthz pun harus ikut terlindungi (temuan audit).
+	if hz.header.Get("X-Content-Type-Options") != "nosniff" || hz.header.Get("Content-Security-Policy") == "" {
+		t.Fatalf("header keamanan tidak terpasang di /healthz: %v", hz.header)
+	}
 	expect(t, s.do("GET", "/readyz", nil, nil), 200, "")
 	// counter berlabel baru muncul setelah ada request; gauge selalu ada sejak awal
 	m := s.do("GET", "/metrics", nil, nil)
@@ -370,6 +375,110 @@ func (s *apiServer) registerAndLoginExisting(email string) (string, string) {
 		s.t.Fatalf("login %s: %d %s", email, l.status, l.raw)
 	}
 	return l.data()["access_token"].(string), ""
+}
+
+// balancesSeenIn mengembalikan set account_public_id yang balance_after_sen-nya TERLIHAT
+// (bukan null) pada daftar entries suatu respons transaksi.
+func balancesSeenIn(entries []any) map[string]bool {
+	seen := map[string]bool{}
+	for _, raw := range entries {
+		e := raw.(map[string]any)
+		if e["balance_after_sen"] != nil {
+			seen[e["account_public_id"].(string)] = true
+		}
+	}
+	return seen
+}
+
+// Audit keamanan (temuan B-1, High): sebelum perbaikan, respons transaksi apa pun
+// membocorkan balance_after SEMUA pihak yang terlibat — termasuk saldo akun sistem
+// (SYSTEM_CASH, SYSTEM_FEE_REVENUE) ke pengguna biasa, dan saldo pihak lawan transfer
+// ke pengirim/penerima. Test ini membuktikan setiap pemanggil HANYA melihat saldo
+// akunnya sendiri, baik di respons POST langsung maupun di GET belakangan; admin tetap
+// melihat semua (dibutuhkan untuk reversal & audit).
+func TestHTTP_B1_SaldoPihakLainTidakBocor(t *testing.T) {
+	s := newAPIServer(t, serverOpts{})
+	tokA, walletA := s.registerAndLogin("andi@test.local")
+	tokB, walletB := s.registerAndLogin("budi@test.local")
+	tokC, _ := s.registerAndLogin("citra@test.local")
+	s.makeAdmin("citra@test.local")
+	tokAdmin, _ := s.registerAndLoginExisting("citra@test.local")
+	_ = tokC
+
+	// 1. Respons LANGSUNG topup: saldo SYSTEM_CASH (akun sistem) tidak boleh terlihat,
+	//    saldo dompet pemanggil sendiri WAJIB terlihat.
+	top := s.do("POST", "/api/v1/transactions/topup", map[string]any{"amount_sen": 10_000_000}, withKey(tokA, uuid.NewString()))
+	expect(t, top, 201, "")
+	seenTop := balancesSeenIn(top.data()["entries"].([]any))
+	if seenTop[walletA] != true {
+		t.Fatalf("topup: saldo dompet sendiri (Andi) harus terlihat: %s", top.raw)
+	}
+	if len(seenTop) != 1 {
+		t.Fatalf("topup: HANYA saldo dompet sendiri yang boleh terlihat, dapat %d akun: %s", len(seenTop), top.raw)
+	}
+
+	// 2. Respons LANGSUNG transfer A->B: Andi (pengirim) TIDAK boleh melihat saldo Budi
+	//    maupun saldo akun fee — hanya saldo dompetnya sendiri.
+	tr := s.do("POST", "/api/v1/transactions/transfer",
+		map[string]any{"to_account_public_id": walletB, "amount_sen": 5_000_000, "description": "bayar kos"},
+		withKey(tokA, uuid.NewString()))
+	expect(t, tr, 201, "")
+	txnID := tr.data()["transaction_id"].(string)
+	seenTr := balancesSeenIn(tr.data()["entries"].([]any))
+	if seenTr[walletA] != true {
+		t.Fatalf("transfer (pengirim): saldo sendiri harus terlihat: %s", tr.raw)
+	}
+	if seenTr[walletB] {
+		t.Fatalf("BUG B-1: pengirim (Andi) melihat saldo penerima (Budi) di respons transfer: %s", tr.raw)
+	}
+	if len(seenTr) != 1 {
+		t.Fatalf("transfer (pengirim): HANYA 1 saldo (miliknya sendiri) yang boleh terlihat, dapat %d: %s", len(seenTr), tr.raw)
+	}
+
+	// 3. GET belakangan oleh Budi (penerima, pihak sah dalam transaksi ini): boleh
+	//    melihat saldo SENDIRI, TIDAK boleh melihat saldo Andi maupun akun fee.
+	getB := s.do("GET", "/api/v1/transactions/"+txnID, nil, bearer(tokB))
+	expect(t, getB, 200, "")
+	seenB := balancesSeenIn(getB.data()["entries"].([]any))
+	if seenB[walletB] != true {
+		t.Fatalf("GET oleh Budi: saldo sendiri harus terlihat: %s", getB.raw)
+	}
+	if seenB[walletA] {
+		t.Fatalf("BUG B-1: Budi melihat saldo Andi lewat GET /transactions/{id}: %s", getB.raw)
+	}
+	if len(seenB) != 1 {
+		t.Fatalf("GET oleh Budi: HANYA saldo sendiri yang boleh terlihat, dapat %d: %s", len(seenB), getB.raw)
+	}
+
+	// 4. GET oleh Andi (pengirim, lewat jalur GET terpisah dari respons POST asli):
+	//    perilaku sama — hanya saldo sendiri.
+	getA := s.do("GET", "/api/v1/transactions/"+txnID, nil, bearer(tokA))
+	expect(t, getA, 200, "")
+	seenA := balancesSeenIn(getA.data()["entries"].([]any))
+	if seenA[walletA] != true || seenA[walletB] {
+		t.Fatalf("GET oleh Andi: mau hanya saldo sendiri terlihat, dapat set=%v: %s", seenA, getA.raw)
+	}
+
+	// 5. ADMIN tetap melihat SEMUA saldo (perlu untuk reversal & audit) — pastikan
+	//    perbaikan ini tidak diam-diam menutup akses admin yang sah.
+	getAdmin := s.do("GET", "/api/v1/transactions/"+txnID, nil, bearer(tokAdmin))
+	expect(t, getAdmin, 200, "")
+	seenAdmin := balancesSeenIn(getAdmin.data()["entries"].([]any))
+	if len(seenAdmin) != len(getAdmin.data()["entries"].([]any)) {
+		t.Fatalf("ADMIN harus melihat SEMUA saldo entry, terlihat %d dari %d: %s", len(seenAdmin), len(getAdmin.data()["entries"].([]any)), getAdmin.raw)
+	}
+	if !seenAdmin[walletA] || !seenAdmin[walletB] {
+		t.Fatalf("ADMIN harus melihat saldo Andi DAN Budi: %s", getAdmin.raw)
+	}
+
+	// amount_sen/fee_sen tetap benar untuk SEMUA pihak walau balance_after disembunyikan —
+	// redaksi tidak boleh merusak informasi transaksi yang memang boleh diketahui.
+	for _, r := range []resp{tr, getA, getB, getAdmin} {
+		if r.data()["amount_sen"].(float64) != 5_000_000 || r.data()["fee_sen"].(float64) != 100_000 {
+			t.Fatalf("amount_sen/fee_sen harus tetap benar meski balance disembunyikan: %s", r.raw)
+		}
+	}
+	assertAllInvariants(t)
 }
 
 func TestHTTP_TransferRateLimitDanBodyBesar(t *testing.T) {

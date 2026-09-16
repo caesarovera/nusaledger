@@ -29,8 +29,12 @@ type JWT struct {
 }
 
 func NewJWT(secret string, ttl time.Duration) (*JWT, error) {
-	if len(secret) < 16 {
-		return nil, errors.New("JWT secret terlalu pendek")
+	// Lantai 32 byte berlaku TANPA syarat APP_ENV (temuan audit A-1): config.Load() hanya
+	// mewajibkan >=32 byte saat APP_ENV=production, jadi lupa menyetel APP_ENV di produksi
+	// diam-diam meloloskan secret pendek. Menegakkannya di sini juga menutup celah itu
+	// terlepas dari salah konfigurasi env. Tidak breaking: semua secret dev/test sudah >=32 byte.
+	if len(secret) < 32 {
+		return nil, errors.New("JWT secret terlalu pendek (minimal 32 byte)")
 	}
 	if ttl <= 0 {
 		return nil, errors.New("umur access token harus > 0")

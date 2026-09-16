@@ -16,7 +16,9 @@ services:
       DRIFT_CHECK_INTERVAL: 30s
     ports:
       # Host 8081 → container 8080. Port 8080 di mesin dev sudah dipakai layanan lain (laragon).
-      - "8081:8080"
+      # Terikat 127.0.0.1 saja (temuan audit F-2): tanpa ini, port terbuka ke seluruh
+      # LAN/Wi-Fi, bukan hanya localhost — meski hanya untuk pengembangan.
+      - "127.0.0.1:8081:8080"
     depends_on:
       postgres:
         condition: service_healthy   # tunggu pg_isready, bukan sleep
@@ -31,7 +33,9 @@ services:
       POSTGRES_DB: nusaledger
     ports:
       # Host 5433 → container 5432. Port 5432 di mesin dev sudah dipakai PostgreSQL lokal (laragon).
-      - "5433:5432"
+      # Terikat 127.0.0.1 saja (temuan audit F-2): Postgres ini pakai password dev yang
+      # sama untuk semua orang yang menjalankan repo ini — jangan biarkan terjangkau LAN/Wi-Fi.
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     command:

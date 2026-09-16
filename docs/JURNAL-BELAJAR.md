@@ -743,6 +743,51 @@ G-3 dipanggil sama seperti G-2 (model Fable, read-only), tapi cakupannya lebih l
 
 ---
 
+## Sesi 31 — Audit keamanan penuh (setelah tag v1.0.0), model Opus (2026-09-16)
+
+### Apa
+Diminta secara eksplisit: audit keamanan **penuh** atas seluruh repo — berbeda dari G-3 (yang fokusnya kesiapan rilis vs Definition of Done) dan dari skill bawaan `/security-review` (yang hanya mereview *diff*; karena semua sudah ter-commit, diff-nya kosong dan skill itu tidak menemukan apa-apa — bukan karena repo bersih, tapi karena tidak ada yang dibandingkan).
+
+Dua lapis:
+1. **Mekanis, sesi utama:** grep pola secret/API key di seluruh working tree; `git log --all` untuk cek `.env` pernah ter-commit; **deep-scan 164 objek git di SEMUA commit** (bukan hanya HEAD) untuk pola token dikenal (`sk-ant-`, `ghp_`, `AKIA`, PEM private key); `govulncheck -show verbose`; cek permission workflow CI; cek Dockerfile/compose.
+2. **Kode, subagent Opus, read-only:** autentikasi, otorisasi/IDOR, injection, kebocoran informasi, konfigurasi, Docker runtime, rate limiting — tujuh kategori (A–G), masing-masing WAJIB melaporkan "tidak ada temuan" secara eksplisit bila bersih, supaya tidak ada kategori yang diam-diam terlewat.
+
+### Kenapa dua lapis, dan kenapa deep-scan SELURUH riwayat git
+**Grep di working tree saja tidak cukup** — kalau sebuah secret pernah di-commit lalu "dihapus" di commit berikutnya, ia tetap ada selamanya di riwayat git (`git log` menyimpan setiap versi, `rm` tidak menghapus blob lama). Repo publik yang pernah bocor secret harus **rotate kredensial itu**, tidak bisa cukup menghapus filenya. Karena itu deep-scan memakai `git rev-list --objects --all` + `cat-file` per blob, bukan `grep -r` yang hanya melihat working tree saat ini.
+
+**Kenapa model Opus, bukan Fable, untuk audit ini:** ini BUKAN salah satu dari tiga gerbang G-1/G-2/G-3 yang dikunci di docs/06 §4 — itu jenis review baru. Per aturan §3.1 ("Opus untuk memutuskan, Fable hanya di tiga gerbang"), audit umum yang membutuhkan penilaian tapi bukan gerbang rilis final memakai model kedua-termahal, bukan yang paling mahal. Menghemat ~separuh biaya per token tanpa mengorbankan kualitas audit — kategori read-only + checklist detail sudah cukup menuntun model manapun yang cukup mampu.
+
+### Hasil
+0 Critical, **1 High**, 3 Medium, 9 Low, 4 Info. Yang ditutup:
+
+1. **[High] Kebocoran saldo lintas pengguna.** Query header transaksi difilter kepemilikan dengan benar (`EXISTS entries WHERE account_id = visibleTo`), tapi query ENTRIES di baris berikutnya **tidak difilter sama sekali** — dan bug yang sama ada di respons *langsung* setiap topup/transfer/withdraw (bukan hanya saat melihat detail belakangan). Skenario: penerima transfer melihat saldo pengirim; siapa pun yang topup melihat saldo kumulatif `SYSTEM_CASH`; transfer apa pun membocorkan saldo `SYSTEM_FEE_REVENUE` — membatalkan pembatasan admin-only pada trial balance.
+
+   **Perbaikan:** `domain.PostResult` mendapat field baru `ViewerAccountID *int64` — anotasi presentasi (bukan kebenaran domain), diisi oleh service (Topup/Withdraw/Transfer memindahkan resolusi wallet ke LUAR closure supaya id-nya tersedia setelah `postIdempotent` kembali; GetTransaction memakai wallet id yang sudah dihitung). dto.go merender `balance_after_sen` sebagai **pointer** (`*int64`, `omitempty`) — `null` untuk entry bukan milik pemanggil, bukan `0`, supaya "tersembunyi" tidak pernah tertukar dengan "saldo nol". Aggregat `amount_sen`/`fee_sen` tetap dihitung dari SEMUA entry (tidak berubah) — hanya `balance_after` yang diredaksi, sehingga tidak ada regresi UX pada informasi yang memang boleh diketahui.
+
+2. **[Medium]** JWT secret ≥32 byte kini ditegakkan **tanpa syarat** `APP_ENV` (sebelumnya, lupa menyetel `APP_ENV=production` diam-diam meloloskan secret 16 byte). Cukup naikkan satu angka di `NewJWT`, tidak breaking karena semua secret dev/test sudah ≥33 byte.
+3. **[Medium]** Port dev Postgres (5433) dan API (8081) diikat `127.0.0.1`, bukan `0.0.0.0` default Docker — sebelumnya terjangkau siapa pun di LAN/Wi-Fi yang sama dengan password dev yang sama untuk semua orang yang *clone* repo ini.
+4. **[Low]** `reverseRequest` tidak punya `validate()` — deskripsi >255 karakter lolos sampai `Transaction.Validate()` lalu jatuh ke 500 generik karena `ErrDescriptionTooLong` tidak dipetakan di `mapError`. Ditambahkan validasi di DTO, konsisten dengan request lain.
+5. **[Low, murah, "tidak ada ruginya"]** Header keamanan HTTP (`X-Content-Type-Options`, CSP, `X-Frame-Options`, dll.) dipasang di **root router** (bukan hanya `/api/v1`) supaya `/healthz`/`/readyz`/`/metrics` ikut terlindungi. `Strict-Transport-Security` hanya dikirim di produksi.
+
+**Diterima, tidak ditutup** (9 Low + 4 Info, semua didokumentasikan di README): `/metrics` publik (pembatasannya benar di jaringan, bukan kode — menggerbanginya di kode akan merusak model *scraping* Prometheus standar), trade-off rate-limit-per-akun (sudah dispesifikasikan), beberapa endpoint tanpa rate limit khusus, refresh-token reuse detection, orakel enumerasi via `409 EMAIL_TAKEN`, penamaan sentinel `ErrInvalidReversalLink` yang dipakai ulang untuk constraint `accounts`.
+
+### Kenapa memilih menutup High SEKARANG, bukan sekadar melaporkannya
+**Repo ini sudah publik.** Sebuah temuan High yang genuinely bisa dieksploitasi (bukan teoretis) pada repo yang sudah live berbeda dari temuan pada kode yang belum dirilis — menunggu izin eksplisit untuk menutup kebocoran data yang sudah bisa diakses siapa pun hari ini bukan sikap yang bertanggung jawab. Prinsip yang sama dipakai saat menutup temuan G-2/G-3 sebelumnya: kalau perbaikannya murah, spesifikasinya jelas dari hasil review, dan risikonya nyata — kerjakan, verifikasi dengan test, lalu laporkan apa yang dilakukan dan kenapa.
+
+### Contoh — kenapa `*int64` bukan `int64` untuk field yang bisa "disembunyikan"
+```go
+type entryResponse struct {
+    // ...
+    BalanceAfterSen *int64 `json:"balance_after_sen,omitempty"`
+}
+```
+Kalau memakai `int64` biasa dan menulis `0` untuk "disembunyikan", klien tidak bisa membedakan "saldo akun ini memang nol" dari "saya tidak boleh melihat saldo akun ini" — dua makna yang SANGAT berbeda untuk sistem uang. Pointer + `omitempty` membuat field itu hilang total dari JSON (bukan `0`), dan Go `nil` tidak bisa disalahartikan sebagai nilai.
+
+### Bukti
+`TestHTTP_B1_SaldoPihakLainTidakBocor` — membuktikan: pengirim topup/transfer hanya melihat saldo sendiri (1 dari N akun terlibat); penerima yang melihat transaksi lewat GET juga hanya melihat saldo sendiri; ADMIN tetap melihat semua; `amount_sen`/`fee_sen` tetap benar di semua sudut pandang. Seluruh suite `-race` (unit + integration, T-04 ×3) tetap hijau setelah perbaikan. `docker compose config` valid setelah port diikat ulang.
+
+---
+
 ## Status akhir sesi (2026-09-16)
 
-Sesi 1–30 selesai, termasuk kedua gerbang review (G-2, G-3) dan seluruh perbaikannya. Fase 1 **selesai dan di-tag `v1.0.0`**. Ringkasan bukti ada di README §Hasil Pengujian dan §Bug yang saya temukan sendiri lewat test (lima bug, dua di antaranya ditemukan lewat review model, bukan test — ini bagian yang paling berharga diceritakan saat wawancara). Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.
+Sesi 1–31 selesai: Fase 1 penuh, tiga gerbang review (G-1 inline, G-2, G-3), dan audit keamanan menyeluruh atas seluruh repo (bukan hanya diff). Satu bug High (kebocoran saldo lintas pengguna) ditemukan dan ditutup SETELAH tag `v1.0.0` — pertimbangkan `v1.0.1` untuk memuat perbaikan ini. Ringkasan bukti ada di README §Hasil Pengujian, §Bug yang saya temukan sendiri lewat test (enam bug — tiga ditemukan lewat review/audit model, bukan test yang sudah ada), dan §Audit Keamanan Penuh. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.

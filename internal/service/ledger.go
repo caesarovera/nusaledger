@@ -79,13 +79,14 @@ func (s *Ledger) Topup(ctx context.Context, req MoneyRequest) (*domain.PostResul
 	if err != nil {
 		return nil, err
 	}
-	return s.postIdempotent(ctx, req.claim("topup"), func() (*domain.Transaction, error) {
-		wallet, err := s.accounts.GetWalletByUserID(ctx, req.Actor.UserID)
-		if err != nil {
-			return nil, err
-		}
+	wallet, err := s.accounts.GetWalletByUserID(ctx, req.Actor.UserID)
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.postIdempotent(ctx, req.claim("topup"), func() (*domain.Transaction, error) {
 		return domain.NewTopup(s.cashID, wallet.ID, amount, req.Actor.UserID, req.Description), nil
 	})
+	return markViewer(res, err, wallet.ID)
 }
 
 // Withdraw menarik dana dari dompet pemanggil ke kas (simulasi).
@@ -94,13 +95,14 @@ func (s *Ledger) Withdraw(ctx context.Context, req MoneyRequest) (*domain.PostRe
 	if err != nil {
 		return nil, err
 	}
-	return s.postIdempotent(ctx, req.claim("withdraw"), func() (*domain.Transaction, error) {
-		wallet, err := s.accounts.GetWalletByUserID(ctx, req.Actor.UserID)
-		if err != nil {
-			return nil, err
-		}
+	wallet, err := s.accounts.GetWalletByUserID(ctx, req.Actor.UserID)
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.postIdempotent(ctx, req.claim("withdraw"), func() (*domain.Transaction, error) {
 		return domain.NewWithdraw(wallet.ID, s.cashID, amount, req.Actor.UserID, req.Description), nil
 	})
+	return markViewer(res, err, wallet.ID)
 }
 
 // Transfer memindahkan dana antar dompet dengan biaya admin (docs/01 §5.1).
@@ -109,11 +111,11 @@ func (s *Ledger) Transfer(ctx context.Context, req TransferRequest) (*domain.Pos
 	if err != nil {
 		return nil, err
 	}
-	return s.postIdempotent(ctx, req.claim("transfer"), func() (*domain.Transaction, error) {
-		from, err := s.accounts.GetWalletByUserID(ctx, req.Actor.UserID)
-		if err != nil {
-			return nil, err
-		}
+	from, err := s.accounts.GetWalletByUserID(ctx, req.Actor.UserID)
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.postIdempotent(ctx, req.claim("transfer"), func() (*domain.Transaction, error) {
 		to, err := s.accounts.GetByPublicID(ctx, req.ToAccountPublicID)
 		if err != nil {
 			return nil, err
@@ -123,6 +125,20 @@ func (s *Ledger) Transfer(ctx context.Context, req TransferRequest) (*domain.Pos
 		}
 		return domain.NewTransfer(from.ID, to.ID, s.feeID, amount, s.cfg.TransferFee, req.Actor.UserID, req.Description)
 	})
+	// Kenapa pemanggil (pengirim) yang jadi ViewerAccountID, bukan penerima: pengirim
+	// yang menerima respons ini. Saldo Budi (penerima) dan akun fee tidak boleh terlihat
+	// di respons transfer milik Andi (temuan audit B-1) — hanya saldo Andi sendiri.
+	return markViewer(res, err, from.ID)
+}
+
+// markViewer menandai akun mana yang boleh melihat balance_after di respons (BR-12).
+// Dipanggil di SETIAP operasi uang non-admin — jangan sampai ada jalur yang lupa.
+func markViewer(res *domain.PostResult, err error, ownAccountID int64) (*domain.PostResult, error) {
+	if err != nil {
+		return nil, err
+	}
+	res.ViewerAccountID = &ownAccountID
+	return res, nil
 }
 
 // Reverse membuat transaksi kebalikan (BR-11). Hanya ADMIN.
@@ -149,7 +165,8 @@ func (s *Ledger) GetTransaction(ctx context.Context, actor domain.Actor, id uuid
 	if err != nil {
 		return nil, err
 	}
-	return s.store.GetTransaction(ctx, id, &wallet.ID)
+	res, err := s.store.GetTransaction(ctx, id, &wallet.ID)
+	return markViewer(res, err, wallet.ID)
 }
 
 // MyWallet mengembalikan dompet pemanggil.

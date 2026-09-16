@@ -123,6 +123,16 @@ type reverseRequest struct {
 	Description string `json:"description"`
 }
 
+// validate (temuan audit C-2): tanpa ini, description > 255 karakter lolos ke
+// domain.Transaction.Validate() dan menghasilkan ErrDescriptionTooLong yang tidak
+// dipetakan di mapError → 500 INTERNAL_ERROR, padahal seharusnya 400 VALIDATION_ERROR.
+func (r reverseRequest) validate() error {
+	if len(r.Description) > 255 {
+		return domain.NewValidationError(map[string]string{"description": "maksimal 255 karakter"})
+	}
+	return nil
+}
+
 // ---- response ----
 
 type userResponse struct {
@@ -174,18 +184,27 @@ type entryResponse struct {
 	AccountType     string    `json:"account_type"`
 	Direction       string    `json:"direction"`
 	AmountSen       int64     `json:"amount_sen"`
-	BalanceAfterSen int64     `json:"balance_after_sen"`
+	// Pointer + omitempty: nil (bukan 0) untuk entry BUKAN milik pemanggil, supaya
+	// "tersembunyi" tidak pernah tertukar dengan "saldo Rp 0" (BR-12, temuan B-1).
+	BalanceAfterSen *int64    `json:"balance_after_sen,omitempty"`
 	TxnType         string    `json:"txn_type,omitempty"`
 	Description     string    `json:"description,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 
-func toEntryResponse(e domain.PostedEntry) entryResponse {
-	return entryResponse{
+// toEntryResponse merender satu entry. visible menentukan apakah balance_after
+// boleh ditampilkan — SELALU false untuk akun yang bukan milik pemanggil (kecuali admin).
+func toEntryResponse(e domain.PostedEntry, visible bool) entryResponse {
+	r := entryResponse{
 		ID: e.ID, TransactionID: e.TransactionID, AccountPublicID: e.AccountPublicID, AccountType: string(e.AccountType),
-		Direction: string(e.Direction), AmountSen: int64(e.Amount), BalanceAfterSen: int64(e.BalanceAfter),
+		Direction: string(e.Direction), AmountSen: int64(e.Amount),
 		TxnType: string(e.TxnType), Description: e.Description, CreatedAt: e.CreatedAt,
 	}
+	if visible {
+		after := int64(e.BalanceAfter)
+		r.BalanceAfterSen = &after
+	}
+	return r
 }
 
 type transactionResponse struct {
@@ -210,7 +229,11 @@ func toTransactionResponse(p *domain.PostResult) transactionResponse {
 		ReversesID: t.ReversesID, CreatedAt: t.CreatedAt, Entries: make([]entryResponse, 0, len(p.Entries)),
 	}
 	for _, e := range p.Entries {
-		resp.Entries = append(resp.Entries, toEntryResponse(e))
+		// ViewerAccountID nil = admin, lihat semua. Selain itu, HANYA entry milik akun
+		// pemanggil sendiri yang balance_after-nya terlihat — saldo pihak lain (termasuk
+		// akun sistem) tidak pernah keluar lewat respons transaksi (BR-12, temuan B-1).
+		visible := p.ViewerAccountID == nil || e.AccountID == *p.ViewerAccountID
+		resp.Entries = append(resp.Entries, toEntryResponse(e, visible))
 		switch {
 		case e.AccountType == domain.AccountSystemFeeRevenue:
 			resp.FeeSen += int64(e.Amount)

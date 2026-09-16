@@ -57,7 +57,9 @@ func (h *ledgerHandler) myEntries(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]entryResponse, 0, len(page.Entries))
 	for _, e := range page.Entries {
-		out = append(out, toEntryResponse(e))
+		// MyEntries selalu di-scope ke dompet pemanggil sendiri (ListEntries, BR-12) —
+		// setiap entry di sini SUDAH pasti miliknya, jadi balance_after selalu terlihat.
+		out = append(out, toEntryResponse(e, true))
 	}
 	writePage(w, out, page.NextCursor)
 }
@@ -154,6 +156,10 @@ func (h *ledgerHandler) reverse(w http.ResponseWriter, r *http.Request) {
 	}
 	var req reverseRequest
 	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := req.validate(); err != nil {
 		writeError(w, r, err)
 		return
 	}

@@ -221,3 +221,25 @@ func itoa(n int64) string {
 	}
 	return string(buf[i:])
 }
+
+// securityHeaders memasang header pertahanan-berlapis yang murah untuk API JSON-only
+// (temuan audit keamanan): API ini tidak merender HTML dan tidak memakai cookie, jadi
+// dampak nyata tanpa header ini rendah — tapi memasangnya tidak ada ruginya, dan
+// beberapa klien/proxy tetap memeriksanya. HSTS hanya dikirim di produksi (harus di
+// belakang TLS; mengirimnya di dev lewat HTTP biasa tidak berguna dan bisa membingungkan).
+func securityHeaders(isProd bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := w.Header()
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+			h.Set("Referrer-Policy", "no-referrer")
+			h.Set("Cross-Origin-Resource-Policy", "same-origin")
+			if isProd {
+				h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}

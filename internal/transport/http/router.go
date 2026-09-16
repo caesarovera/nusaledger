@@ -29,6 +29,7 @@ type Deps struct {
 	Ready     func(ctx context.Context) error
 	Readiness *Readiness
 	Timeout   time.Duration
+	Prod      bool // hanya untuk securityHeaders (HSTS); TIDAK mengubah perilaku lain
 }
 
 // Readiness adalah saklar siap-menerima-trafik. Dimatikan sebelum server berhenti
@@ -45,6 +46,9 @@ func NewRouter(d Deps) http.Handler {
 		d.Timeout = 30 * time.Second
 	}
 	r := chi.NewRouter()
+	// Dipasang di ROOT (bukan hanya /api/v1) supaya /healthz, /readyz, /metrics ikut
+	// terlindungi (temuan audit): header pertahanan-berlapis murah untuk API JSON-only.
+	r.Use(securityHeaders(d.Prod))
 
 	// operasional — tanpa auth, tanpa log per request agar tidak membanjiri
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {

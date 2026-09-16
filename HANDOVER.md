@@ -1,5 +1,14 @@
 # HANDOVER
 
+## Terakhir dikerjakan (2026-09-16, lanjutan) — Audit keamanan penuh setelah tag v1.0.0
+Repo sudah di-tag `v1.0.0` (lihat entri di bawah), lalu diminta menjalankan **audit keamanan penuh** (bukan diff, seluruh repo). Model Opus (read-only) untuk audit kode; sesi utama untuk pemeriksaan mekanis (grep secret, deep-scan git history, govulncheck verbose) — bersih total, tidak ada secret yang pernah bocor.
+
+**1 temuan High, ditutup segera** (repo sudah publik): `GetTransaction` memfilter header transaksi dengan benar tapi query ENTRIES di bawahnya tidak difilter sama sekali, dan bug yang sama ada di respons *langsung* topup/transfer/withdraw — siapa pun yang bertransaksi melihat saldo pihak lain, termasuk saldo kumulatif akun sistem (`SYSTEM_CASH`, `SYSTEM_FEE_REVENUE`). Ditutup dengan `domain.PostResult.ViewerAccountID`: service (`Topup`/`Withdraw`/`Transfer`/`GetTransaction`) menandai akun mana yang boleh menampilkan `balance_after`; dto.go merender `null` untuk yang lain. `amount_sen`/`fee_sen` tetap benar untuk semua pihak. Test baru: `TestHTTP_B1_SaldoPihakLainTidakBocor`.
+
+3 Medium lain: 2 ditutup (JWT secret ≥32 byte tanpa syarat `APP_ENV`; port dev Postgres/API diikat `127.0.0.1` bukan `0.0.0.0`), 1 diterima (`/metrics` publik — pembatasan yang benar ada di jaringan, bukan kode). Beberapa Low ditutup sekalian (validasi `reverseRequest`, header keamanan HTTP di root router). Sisanya (9 Low, 4 Info) didokumentasikan sebagai keterbatasan Fase 1 di README, bukan disembunyikan.
+
+Semua perbaikan diverifikasi `-race` penuh (unit + integration, T-04 ×3) dan lint/vet bersih sebelum commit.
+
 ## Terakhir dikerjakan (2026-09-16) — G-2, G-3, dan tag v1.0.0
 Selesai: Sesi 1–29 + G-2 + G-3 + perbaikan hasil keduanya. Semua kode Fase 1, T-01…T-14 hijau (T-04 ×5), T-10c baru, E2E HTTP hijau (24 test integration), lint 0 issue, govulncheck bersih, image 18,6 MB, `docker compose up` → ready 4 s, CI workflow (lulus di GitHub, run pertama), OpenAPI, README final, k6 dijalankan.
 Coverage: domain 99,1 %, service 84,2 %. Bukti lengkap di `docs/evidence/`. Jurnal sampai Sesi 26 (G-2) — lihat entri terbaru.
@@ -10,8 +19,8 @@ Coverage: domain 99,1 %, service 84,2 %. Bukti lengkap di `docs/evidence/`. Jurn
 **G-3** (Fable, read-only, release gate): kesimpulan **YA-DENGAN-CATATAN**. Satu temuan ditindaklanjuti sebelum tag: `/auth/register` tanpa rate limit (argon2id mahal, vektor DoS ringan) → ditambah `rateLimitByIP` + `REGISTER_RATE_LIMIT` (default 10/15 menit). Temuan minor lain (limiter login per email, `/metrics` publik, penamaan `ErrInvalidReversalLink` untuk constraint accounts) diterima sebagai trade-off Fase 1, dicatat di README.
 
 ## Berikutnya
-1. Tag `v1.0.0` setelah dokumen ini + JURNAL + docs/06 §10 tersinkron (sedang dikerjakan).
-2. Fase 1.1 (tidak menghalangi rilis): pisahkan sentinel `ErrIntegrityViolation` dari `ErrInvalidReversalLink` untuk constraint `chk_normal_balance`/`chk_owner`.
+1. **Pertimbangkan tag `v1.0.1`** (patch keamanan) setelah commit audit ini di-push — `v1.0.0` yang sudah di-tag TIDAK memuat perbaikan bug High di atas.
+2. Fase 1.1 (tidak menghalangi rilis): pisahkan sentinel `ErrIntegrityViolation` dari `ErrInvalidReversalLink`; rate limit `/auth/refresh`/`topup`/`withdraw`; refresh-token reuse detection.
 3. Perbaikan performa (Fase 1.1/2): sharding akun fee → ukur ulang k6 di Linux native. Jangan mengubah `Post()` tanpa mengulang T-04…T-09.
 4. Fase 2: outbox relay, worker, rate limit Redis, batasi `/metrics` di jaringan.
 

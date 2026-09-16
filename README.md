@@ -75,6 +75,10 @@ Arah dependensi: `transport → service → domain`, `repository → domain`. Do
 | Rate limit in-memory, fail-closed | Redis | Fase 1 satu instance; interface memungkinkan Redis di Fase 2 |
 | Rate limit `/auth/register` per IP (ditambah pasca G-3) | Tanpa limiter | argon2id (64 MiB, t=3) mahal; registrasi anonim berulang bisa menghabiskan CPU/memori tanpa pembatas |
 | Tanpa `middleware.RealIP` | Percaya `X-Forwarded-For` | Header itu bisa dipalsukan siapa pun tanpa proxy tepercaya (GHSA-3fxj-6jh8-hvhx) |
+| `ViewerAccountID` pada `PostResult`: respons transaksi hanya menampilkan `balance_after` milik pemanggil sendiri | Tampilkan semua entry apa adanya | Tanpa ini, transfer/topup/withdraw membocorkan saldo pihak lain — termasuk saldo kumulatif akun sistem — ke pengguna biasa (audit keamanan penuh, temuan B-1, High) |
+| JWT secret minimal 32 byte **tanpa syarat** `APP_ENV` | Hanya wajib saat `APP_ENV=production` | Lupa menyetel `APP_ENV` di produksi tidak lagi diam-diam meloloskan secret lemah (temuan A-1) |
+| Port dev (`5433`, `8081`) terikat `127.0.0.1` | Terikat `0.0.0.0` (default Docker) | Postgres berpassword sama untuk semua orang yang clone repo ini tidak boleh terjangkau LAN/Wi-Fi (temuan F-2) |
+| Header keamanan HTTP (`nosniff`, CSP, dll.) di root router | Tidak dipasang | Murah, tidak ada ruginya untuk API JSON-only; melindungi juga `/healthz`/`/readyz`/`/metrics` |
 
 ## Hasil Pengujian
 
@@ -112,14 +116,28 @@ Penyebab utama yang teridentifikasi: **setiap transfer mengunci akun `SYSTEM_FEE
 3. **Melepas `version` tidak memunculkan lost update** — berbeda dari dugaan dokumen. Eksperimen (`docs/evidence/eksperimen-kunci.md`) menunjukkan `UPDATE … SET balance = balance + $1` (relatif) + `CHECK (balance >= 0)` sudah menjaga uang; yang benar-benar rusak tanpa `FOR UPDATE ORDER BY id` adalah **deadlock** (99 dari 100 transfer silang). Pertahanan berlapis bekerja, dan tiap lapis ternyata menjaga hal yang berbeda.
 4. **Rate limit membatalkan load test pertama.** 99,98 % request k6 ditolak 401/429 karena batas login 5/15 menit per IP dan transfer 20/menit per user. Pembatas bekerja; load test memakai `docker-compose.load.yml` yang menaikkannya.
 5. **Bug idempotency ditemukan lewat review G-2 (model Fable, read-only), bukan test yang sudah ada.** `postIdempotent` yang kalah balapan idempotency membuang hasil `replay()` dan selalu mengembalikan `IDEMPOTENCY_IN_FLIGHT`, walau body request ternyata berbeda (seharusnya `IDEMPOTENCY_CONFLICT`). Klien dengan key sama + body beda yang kalah balapan akan retry selamanya menerima "coba lagi" yang tidak pernah menjadi benar. Ditemukan lewat review kode, ditutup dengan mengembalikan `err2` dari `replay()` apa adanya. Ini contoh nyata kenapa gerbang review terpisah (bukan sekadar test yang lulus) tetap perlu sebelum rilis.
+6. **Kebocoran saldo lintas pengguna (audit keamanan penuh, model Opus, temuan High).** `GetTransaction` memfilter kepemilikan HEADER transaksi dengan benar (`EXISTS entries WHERE account_id = visibleTo`), tapi query ENTRIES di bawahnya tidak difilter sama sekali — dan bug yang sama ada di respons *langsung* setiap topup/transfer/withdraw. Akibatnya: penerima transfer melihat saldo pengirim setelah transaksi; siapa pun yang topup melihat saldo kumulatif kas platform (`SYSTEM_CASH`); transfer apa pun membocorkan saldo `SYSTEM_FEE_REVENUE`. Ini secara efektif membatalkan pembatasan admin-only pada `/internal/ledger/trial-balance`. Ditutup dengan `PostResult.ViewerAccountID`: setiap respons transaksi hanya menampilkan `balance_after` milik akun pemanggil sendiri (`null` untuk yang lain), sementara `amount_sen`/`fee_sen` tetap benar untuk semua pihak. Dibuktikan test `TestHTTP_B1_SaldoPihakLainTidakBocor`.
+
+## Audit Keamanan Penuh (2026-09-16, model Opus, read-only)
+
+Selain tiga gerbang review G-1/G-2/G-3, dijalankan audit keamanan menyeluruh (bukan diff, seluruh repo): 0 Critical, **1 High** (bug #6 di atas, sudah ditutup), 3 Medium, 9 Low, 4 Info. Pemeriksaan mekanis (sesi utama, sebelum audit kode): tidak ada secret *hardcode*, `.env` tidak pernah masuk git di seluruh riwayat, deep-scan seluruh objek git untuk pola token API/private key bersih total, `govulncheck` nol kerentanan yang dipanggil kode kita.
+
+Medium yang ditutup selain bug #6: JWT secret kini minimal 32 byte **tanpa syarat** `APP_ENV` (sebelumnya validasi ketat hanya jalan bila `APP_ENV=production` disetel eksplisit); port dev Postgres & API diikat ke `127.0.0.1` (sebelumnya `0.0.0.0`, terjangkau LAN/Wi-Fi). Low yang ditutup: `reverseRequest` sekarang divalidasi (deskripsi > 255 karakter dulu jadi 500, sekarang 400); header keamanan HTTP dipasang di root router.
+
+**Diterima sebagai keterbatasan Fase 1, tidak ditutup sekarang** (semua Low/Info, tidak eksploitatif untuk repo publik ini):
+- `/metrics` tanpa autentikasi di port publik — membatasinya lewat kode akan merusak model *scraping* Prometheus standar; pembatasan yang benar ada di jaringan/reverse proxy saat deploy sungguhan.
+- Rate limit login mengunci akun korban 15 menit jika penyerang tahu emailnya — trade-off standar rate-limit-per-akun, sudah dispesifikasikan sejak docs/03 §6.
+- Beberapa endpoint (`/auth/refresh`, `topup`, `withdraw`, `reverse`) belum punya rate limit khusus di luar yang sudah ada untuk login/register/transfer.
+- Rotasi refresh token belum mendeteksi pemakaian ulang (reuse detection) untuk mencabut seluruh "family" token bila token yang sudah dirotasi dipakai lagi.
+- `/auth/register` membocorkan keberadaan email lewat `409 EMAIL_TAKEN` (orakel enumerasi), membatalkan sebagian usaha anti-enumerasi di `Login`.
+- `translate()` memetakan constraint `chk_normal_balance`/`chk_owner` (tabel `accounts`) ke sentinel `ErrInvalidReversalLink` yang namanya untuk reversal — benar secara HTTP (400) tapi salah nama.
 
 ## Yang akan diperbaiki berikutnya
 
 - **Baris panas fee** → sharding sub-akun fee atau akumulasi per periode, lalu ukur ulang SLO di Linux native.
 - **Fase 2**: outbox relay → RabbitMQ (tabel `outbox_events` sudah ditulis sejak Fase 1), worker `cmd/worker`, rate limit Redis, role DB aplikasi tanpa hak `UPDATE/DELETE/TRUNCATE` pada `entries`.
 - Migrasi produksi sebagai langkah deploy terpisah (`RUN_MIGRATIONS=false`), secret dari secret manager.
-- **Kerapian kecil (ditemukan review G-3, tidak menghalangi rilis):** `translate()` memetakan constraint `chk_normal_balance`/`chk_owner` (tabel `accounts`) ke sentinel `ErrInvalidReversalLink` yang namanya untuk reversal — benar secara HTTP (400 VALIDATION_ERROR) tapi salah nama. Pisahkan jadi `ErrIntegrityViolation` di Fase 1.1.
-- `/metrics` belum dibatasi jaringan (membocorkan hitungan route & login gagal) — batasi di reverse proxy saat deploy sungguhan.
+- Fase 1.1: pisahkan `ErrIntegrityViolation` dari `ErrInvalidReversalLink`; rate limit `/auth/refresh`/`topup`/`withdraw`; refresh-token reuse detection; batasi `/metrics` di reverse proxy.
 
 ## Dokumen
 
