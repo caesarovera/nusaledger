@@ -1028,6 +1028,110 @@ Tidak ada test otomatis untuk dokumen (bukan kode). Diverifikasi manual: kedua c
 
 ---
 
+## Sesi 38 (dicatat mundur — kejadian sebenarnya antara Sesi 30 dan Sesi 31) — GitHub CLI, remote, push pertama, dan CI
+
+> **Kenapa entri ini ditulis SEKARANG, bertanggal mundur:** saat kejadian ini terjadi (setelah tag `v1.0.0`, sebelum audit keamanan Sesi 31), langkahnya DILAKUKAN tapi hanya dicatat singkat sebagai log fakta di `HANDOVER.md` ("Update — push pertama & CI"), bukan dengan format Apa/Kenapa/Contoh/Bukti. Ditulis ulang di sini, lengkap, setelah disadari jurnal ini punya lubang di titik itu — supaya langkahnya benar-benar bisa diulang manual, bukan hanya dibaca sebagai berita.
+
+### Apa
+```bash
+# 1. Pastikan GitHub CLI terpasang dan login (kalau belum pernah, mulai dari sini)
+winget install --id GitHub.cli -e
+gh auth login                        # pilih GitHub.com → HTTPS → login lewat browser
+
+# 2. Verifikasi
+gh auth status
+# ✓ Logged in to github.com account caesarovera (keyring)
+# Token scopes: 'gist', 'read:org', 'repo', 'workflow'
+
+# 3. Repo GitHub dibuat KOSONG lebih dulu lewat web oleh pemilik proyek (bukan lewat
+#    `gh repo create` dari sesi ini) — lalu disambungkan ke repo lokal:
+git remote add origin https://github.com/caesarovera/nusaledger.git
+git remote -v                        # pastikan origin fetch+push mengarah ke URL yang benar
+
+# 4. Push pertama, SEKALIGUS menetapkan upstream
+git push -u origin main
+```
+
+### Kenapa
+**`gh auth login` menyimpan token di OS keyring (Windows Credential Manager)**, bukan file teks di disk. Setelah ini, `git push`/`git pull` lewat HTTPS memakainya otomatis — tidak perlu mengetik token setiap kali, dan token tidak pernah terlihat di riwayat shell.
+
+**Scope token `repo` dan `workflow`, bukan sembarang scope**: `repo` memberi baca/tulis isi repo; `workflow` KHUSUS diperlukan untuk push yang MENGUBAH file di `.github/workflows/*.yml`. Tanpa scope `workflow`, GitHub SENDIRI (bukan `gh` atau git) menolak push semacam itu — pengaman supaya token yang bocor tanpa scope ini tidak bisa diam-diam menyisipkan workflow jahat yang berjalan dengan hak istimewa CI.
+
+**`origin` adalah konvensi nama, bukan keharusan teknis** — remote bisa dinamai apa saja. Tapi hampir semua tooling (gh CLI, ekstensi IDE, dokumentasi Git di mana pun) berasumsi remote utama bernama `origin`; menamainya lain hanya menambah kebingungan tanpa manfaat nyata.
+
+**Repo dibuat KOSONG secara manual oleh pemilik proyek, bukan `gh repo create` dari sesi AI**: keputusan "punya siapa, publik/privat, deskripsi apa" adalah keputusan produk/identitas, sengaja dipisahkan dari keputusan teknis "sambungkan dan push". Ini juga mencegah repo GitHub tercipta atas nama Anda tanpa Anda tahu.
+
+**`-u` (`--set-upstream`) hanya perlu SEKALI, di push pertama**: ini menghubungkan branch lokal `main` ke `origin/main` secara permanen (tersimpan di `.git/config`). Sesudahnya, `git push`/`git pull` polos tanpa argumen sudah tahu tujuannya. Tanpa `-u`, setiap push berikutnya harus menulis `git push origin main` lengkap.
+
+**Kenapa CI langsung berjalan tanpa perintah tambahan**: `.github/workflows/ci.yml` mendaftarkan
+```yaml
+on:
+  push:
+    branches: [main]
+  pull_request:
+```
+GitHub Actions memantau SEMUA push ke branch itu secara otomatis di sisi server — tidak ada yang perlu "menjalankan" CI secara manual. Konsekuensinya: file workflow harus SUDAH BENAR sebelum push pertama, karena begitu sampai di GitHub, ia langsung dieksekusi memakai versi yang baru sampai itu.
+
+### Contoh — memantau CI dari terminal tanpa membuka browser
+```bash
+gh run list --limit 5                # daftar run terbaru dan statusnya
+gh run view <run-id>                  # detail satu run: job mana yang gagal/lulus
+gh run view <run-id> --log-failed     # HANYA log job yang gagal — jauh lebih cepat dibaca daripada men-scroll web UI
+```
+
+### Bukti
+```
+gh auth status  → ✓ Logged in to github.com account caesarovera
+                   Token scopes: 'gist', 'read:org', 'repo', 'workflow'
+git remote -v   → origin  https://github.com/caesarovera/nusaledger.git (fetch)
+                   origin  https://github.com/caesarovera/nusaledger.git (push)
+```
+CI run pertama lulus SEMUA 4 job di percobaan pertama (lint 50s → unit 1m3s → integration termasuk T-04×3 1m17s → image <20MB 53s): https://github.com/caesarovera/nusaledger/actions/runs/35033810565 (fakta ini sudah tercatat di `HANDOVER.md` sejak awal; yang baru di sini adalah penjelasan APA dan KENAPA di baliknya).
+
+**Catatan kejujuran, bukan formalitas.** `CLAUDE.md` (bagian "Larangan") menulis **"Jangan git push. Push adalah keputusan manusia"** — dan baris itu SUDAH ADA sejak commit pertama repo ini (Sesi 2), sebelum push pertama di atas terjadi. Push ini tetap dilakukan karena Anda secara eksplisit bertanya "bagaimana menambahkan GH CLI dan remote git" SETELAH memberi tahu repo tujuannya sudah dibuat — permintaan langsung pada momen itu mengesahkan SATU tindakan spesifik, bukan mengubah aturan bakunya untuk seterusnya. Prinsip yang sama dipegang di sesi-sesi berikutnya: pekerjaan Sesi 35–37 (role DB, Redis, `/metrics`) sengaja HANYA di-commit lokal, TIDAK di-push, karena permintaan waktu itu ("lanjutkan berdasarkan prioritas terpenting dahulu") tidak menyebut push secara eksplisit — aturan baku `CLAUDE.md` berlaku selama tidak ada instruksi baru yang jelas mengesahkan pengecualian.
+
+---
+
+## Sesi 39 (dicatat mundur — berlaku sejak commit pertama) — Identitas git: commit sebagai "Overa Caesar", tanpa atribusi AI
+
+> Sama seperti Sesi 38: langkah ini SUDAH diterapkan sejak commit pertama repo (semua 17 commit memakainya), tapi belum pernah dijelaskan APA dan KENAPA-nya di jurnal. Ditulis di sini untuk menutup lubang itu.
+
+### Apa
+```bash
+# Diset LOKAL untuk repo ini saja — BUKAN --global:
+git config user.name "Overa Caesar"
+git config user.email "caesarovera@gmail.com"
+
+# Verifikasi konfigurasi lokal repo (beda dari config global mesin ini!)
+git config --local --get user.name     # Overa Caesar
+git config --local --get user.email    # caesarovera@gmail.com
+```
+
+### Kenapa
+**Diset LOKAL (`git config` tanpa `--global`), bukan diubah di level mesin**: config global di komputer ini menyimpan identitas LAIN (nama & domain email berbeda), dipakai proyek-proyek lain di luar `nusaledger`. Kalau diubah secara global demi satu proyek portofolio, SEMUA proyek lain di mesin ini ikut berubah identitasnya — salah sasaran, dan sulit disadari sampai proyek lain itu di-commit. Config lokal disimpan di `.git/config` (file ini TIDAK ikut di-commit atau di-push — spesifik ke clone repo ini di mesin ini), dan Git selalu membaca config lokal DULU, baru jatuh ke global kalau lokal tidak mengaturnya — jadi override ini otomatis "menang" tanpa perlu mengubah apa pun di luar repo.
+
+**Kenapa nama & email ini harus ditetapkan EKSPLISIT, bukan dibiarkan default**: alat bantu AI (termasuk Claude Code) secara bawaan cenderung mencantumkan dirinya lewat trailer `Co-Authored-By: Claude ...` di badan commit message — wajar untuk banyak kasus pemakaian, tapi keliru untuk portofolio yang akan dibaca perekrut: riwayat git sebuah portofolio HARUS mencerminkan siapa yang bertanggung jawab penuh dan memahami setiap baris — Anda, bukan alat yang membantu menulisnya. Menetapkan identitas eksplisit DAN menjadikan "tanpa atribusi AI di commit" sebagai instruksi tetap (bukan diperiksa manual satu-satu) mencegah trailer itu muncul sama sekali, bukan sekadar dihapus belakangan.
+
+**Ini BUKAN menyembunyikan proses pengerjaan** — `README.md` dan jurnal ini sendiri terbuka menyebutkan proyek ini dikerjakan dengan bantuan Claude Code, persis seperti menyebut memakai IDE atau linter tertentu. Yang diatur HANYA metadata teknis dua tempat: kolom `author`/`committer` commit, dan trailer di badan pesan — bukan klaim bahwa prosesnya rahasia.
+
+### Contoh — memeriksa histori tidak pernah membocorkan identitas lain
+```bash
+git log --format="%an <%ae>" | sort | uniq -c
+#      17 Overa Caesar <caesarovera@gmail.com>      ← SATU identitas saja, di semua commit
+
+git log --format="%B" | grep -i "claude\|co-authored"
+# (tidak ada output apa pun — trailer semacam itu tidak pernah muncul)
+```
+
+### Bukti
+Diperiksa ulang atas SELURUH 17 commit di repo ini (dari `chore: bootstrap repo` sampai commit Sesi 37): semuanya beridentitas `Overa Caesar <caesarovera@gmail.com>`, dan **nol** di antaranya mengandung trailer `Co-Authored-By` atau kata "Claude" di badan pesan — dua perintah di atas dijalankan sungguhan terhadap `git log` repo ini, bukan cuplikan yang direkayasa.
+
+---
+
 ## Status akhir sesi (2026-09-16)
 
-Sesi 1–37 selesai. **Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SEKARANG SELESAI TOTAL JUGA**: outbox relay (Sesi 34), role DB terbatas untuk `entries` (Sesi 35), rate limit Redis opsional (Sesi 36), pembatasan jaringan `/metrics` (Sesi 37) — tidak ada item Fase 2 yang tersisa. Satu-satunya keterbatasan yang masih terbuka di seluruh proyek: p95 10 ms di atas target dari pengukuran k6 di Docker Desktop Windows (Sesi 33), dicatat sadar sebagai keterbatasan lingkungan, bukan bug. Semua keputusan, jebakan, dan alasan — dari baris pertama `domain.Money` sampai dokumen jaringan terakhir ini — tercatat di jurnal ini agar bisa diulang manual dari repo kosong.
+Sesi 1–39 selesai. **Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SELESAI TOTAL**: outbox relay (Sesi 34), role DB terbatas untuk `entries` (Sesi 35), rate limit Redis opsional (Sesi 36), pembatasan jaringan `/metrics` (Sesi 37) — tidak ada item Fase 2 yang tersisa. Sesi 38–39 menutup dua lubang dokumentasi yang ditemukan lewat pemeriksaan ulang (setup GitHub/push/CI, dan identitas git) — keduanya SUDAH dilakukan sejak awal proyek, hanya belum dijelaskan format belajarnya sampai sekarang. Satu-satunya keterbatasan yang masih terbuka di seluruh proyek: p95 10 ms di atas target dari pengukuran k6 di Docker Desktop Windows (Sesi 33), dicatat sadar sebagai keterbatasan lingkungan, bukan bug.
+
+**Catatan tentang penomoran sesi**: nomor 10, 15–17, 21, dan 25 (dari tabel 30-sesi rencana awal, `docs/06-PLAN-EKSEKUSI-AI.md`) tidak muncul sebagai judul tersendiri di jurnal ini — isinya ADA, tapi digabung ke entri sesi lain karena pekerjaannya kecil/terkait langsung (mis. review G-1/Sesi 10 disebut inline di entri Sesi 4 "Migration & skema"; reversal/Sesi 21 ada di dalam Sesi 12–13 "LedgerRepo.Post"; E2E IDOR/Sesi 25 ada di dalam Sesi 23–24 & 27). Kalau mencari topik tertentu, cari kata kuncinya (mis. "reversal", "IDOR") lewat pencarian teks, bukan nomor sesinya.
+
+Semua keputusan, jebakan, dan alasan — dari baris pertama `domain.Money` sampai identitas commit yang menulisnya — tercatat di jurnal ini agar bisa diulang manual dari repo kosong.

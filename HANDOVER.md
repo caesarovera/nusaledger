@@ -1,5 +1,17 @@
 # HANDOVER
 
+## Terakhir dikerjakan (2026-09-16, lanjutan) — Menutup dua lubang dokumentasi + tag `v1.2.0`
+Ditanya "apakah dari tahap setup awal sampai sekarang sudah dijelaskan step by step". Jawabannya sebagian besar ya, tapi ditemukan dua lubang nyata lewat pemeriksaan ulang `docs/JURNAL-BELAJAR.md`:
+
+1. **Setup GitHub CLI, remote, push pertama, dan CI** hanya tercatat sebagai log fakta singkat di HANDOVER ("Update — push pertama & CI"), bukan format belajar Apa/Kenapa/Contoh/Bukti.
+2. **Identitas git** (`git config user.name "Overa Caesar"`, LOKAL bukan `--global`) tidak tercatat sama sekali, padahal ini aturan tetap yang diminta eksplisit.
+
+Ditutup dengan **Sesi 38 dan 39** (jurnal, ditulis mundur — kejadiannya SUDAH lama, dokumentasinya yang baru sekarang lengkap). Sesi 38 juga mencatat temuan jujur: `CLAUDE.md` sudah berisi "Jangan git push" SEJAK COMMIT PERTAMA, sebelum push pertama itu terjadi — dijelaskan kenapa itu bukan kontradiksi (permintaan eksplisit di momen itu mengesahkan satu tindakan spesifik, bukan mengubah aturan baku).
+
+**Juga dibuat tag `v1.2.0`** (lokal, BELUM di-push) menandai Fase 2 benar-benar selesai total — tag `v1.1.0` sebelumnya hanya menunjuk ke slice outbox pertama (commit `3aef909`), sebelum tiga pekerjaan terakhir (role DB, Redis, `/metrics`). `v1.1.0` TIDAK diubah/dipindah, `v1.2.0` ditambahkan di HEAD saat ini (`4a56ddf`).
+
+**Status push:** empat commit terbaru (role DB, Redis, `/metrics` docs, dua entri jurnal) + tag `v1.2.0` masih LOKAL SAJA, belum di-push — sesuai `CLAUDE.md` ("Jangan git push. Push adalah keputusan manusia"), menunggu keputusan Anda.
+
 ## Terakhir dikerjakan (2026-09-16, lanjutan) — Batasi `/metrics` di jaringan (Fase 2, item terakhir — FASE 2 SELESAI TOTAL)
 Item ketiga dan terakhir dari "lanjutkan berdasarkan prioritas terpenting dahulu". Sengaja BUKAN perubahan kode: `/metrics` tanpa autentikasi di level aplikasi TETAP demikian (mengubahnya akan merusak model *scraping* Prometheus standar), pembatasan yang benar ada di jaringan. Ditulis `docs/deploy-metrics-network.md` — contoh konfigurasi nginx (`allow`/`deny` per CIDR), Caddy (`remote_ip` matcher), dan alternatif `NetworkPolicy` Kubernetes (lebih kuat: menempel di Pod, bukan per instance proxy) — plus penjelasan kenapa dev repo ini SUDAH aman (semua port diikat `127.0.0.1` sejak audit F-2).
 
