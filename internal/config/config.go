@@ -43,6 +43,9 @@ type Config struct {
 	LoginRateWindow    time.Duration `env:"LOGIN_RATE_WINDOW" envDefault:"15m"`
 	TransferRateLimit  int           `env:"TRANSFER_RATE_LIMIT" envDefault:"20"`
 	TransferRateWindow time.Duration `env:"TRANSFER_RATE_WINDOW" envDefault:"1m"`
+	// Per IP. argon2id (64 MiB, t=3) mahal; tanpa ini registrasi anonim berulang menghabiskan CPU/memori (temuan G-3).
+	RegisterRateLimit  int           `env:"REGISTER_RATE_LIMIT" envDefault:"10"`
+	RegisterRateWindow time.Duration `env:"REGISTER_RATE_WINDOW" envDefault:"15m"`
 }
 
 // Load membaca env dan memvalidasi. Error berarti aplikasi tidak boleh start.

@@ -155,6 +155,21 @@ func rateLimitByActor(l allower) func(http.Handler) http.Handler {
 	}
 }
 
+// rateLimitByIP membatasi per alamat IP, untuk endpoint SEBELUM ada Actor (register).
+// Ditemukan G-3: /auth/register memanggil argon2id (64 MiB, t=3) tanpa pembatas apa pun —
+// registrasi anonim berulang bisa menghabiskan CPU/memori server (BR tidak bernomor, ditutup pra-rilis).
+func rateLimitByIP(l allower) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !l.Allow("ip:" + clientIP(r)) {
+				writeError(w, r, errRateLimited)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // idempotency membaca header Idempotency-Key (wajib) dan menghitung hash body (BR-07, BR-08).
 // Body dibaca di sini lalu dikembalikan ke request agar handler tetap bisa men-decode-nya.
 func idempotency(next http.Handler) http.Handler {

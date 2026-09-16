@@ -418,8 +418,8 @@ Cadangan (bukan sesi terjadwal): `/simplify` setelah sesi 24 dan 27; `explorer` 
 | 10 (G-1) | ✅ inline | Dilakukan sesi utama saat menulis migration: `chk_owner`, `chk_reversal_link`, `uq_entry_account_per_txn`, CONSTRAINT name pada RAISE. |
 | 11–17 (Minggu 2) | ✅ | `LedgerRepo.Post`, harness testcontainers, EXPLAIN 0,49 ms @200k, T-02/03/08/09. Review DBA (17) dilakukan inline. |
 | 18–25 (Minggu 3) | ✅ | Service, auth, HTTP, T-04 (19 sukses ×5), T-05, T-06, T-07 (0 deadlock), T-10/10b, T-11, T-12 (ctx via Timeout middleware), eksperimen kunci (temuan berbeda dari dugaan dokumen). |
-| 26 (G-2) | ⏳ belum | Review Fable read-only atas `Post` + konkurensi belum dijalankan formal. |
-| 27–29 (Minggu 4) | ✅ | T-13, Docker 18,6 MB, compose ready 4 s, CI, OpenAPI, k6. **SLO latensi tidak tercapai** (177 tps, p95 515 ms) — penyebab: baris panas akun fee. Correctness 100 %. |
-| 30 (G-3, security review, tag) | ⏳ belum | Dihentikan atas permintaan pemilik proyek. |
+| 26 (G-2) | ✅ | Review Fable (Agent tool, `model: "fable"`, read-only) atas `Post` + konkurensi. Kesimpulan: nol temuan penciptaan/kehilangan uang atau deadlock. 4 perbaikan diterapkan (bug idempotency race, konsistensi Validate reversal, translate() SQLSTATE, overflow pre-check) + T-10c + assert conflict==0. Diverifikasi `-race` penuh. |
+| 27–29 (Minggu 4) | ✅ | T-13, Docker 18,6 MB, compose ready 4 s, CI (lulus di GitHub run pertama), OpenAPI, k6. **SLO latensi tidak tercapai** (177 tps, p95 515 ms) — penyebab: baris panas akun fee. Correctness 100 %. |
+| 30 (G-3, security review, tag) | ✅ | G-3 (Fable, read-only): YA-DENGAN-CATATAN. Temuan Medium (register tanpa rate limit, argon2id) ditindaklanjuti sebelum tag. `/security-review` skill: diff kosong (semua sudah di-push), diganti audit manual dalam G-3. Tag `v1.0.0` dibuat setelah dokumen ini. |
 
-Penyimpangan dari plan yang perlu diketahui: port API host 8081 (8080 dipakai laragon); `misspell` dimatikan; `middleware.RealIP` sengaja tidak dipakai; `docker-compose.load.yml` untuk k6.
+Penyimpangan dari plan yang perlu diketahui: port API host 8081 (8080 dipakai laragon); `misspell` dimatikan; `middleware.RealIP` sengaja tidak dipakai; `docker-compose.load.yml` untuk k6; subagent kustom di `.claude/agents/*.md` **tidak dikenali** sebagai `subagent_type` oleh Agent tool di harness ini — G-1 informal, G-2/G-3 dijalankan via `subagent_type: "general-purpose"` dengan `model` di-override manual (`"fable"`/`"sonnet"`) dan persona ditulis lengkap di prompt, bukan lewat file agent proyek.

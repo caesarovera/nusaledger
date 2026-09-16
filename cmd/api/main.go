@@ -97,6 +97,7 @@ func run() error {
 		Logger: log, Metrics: m, JWT: jwt, Auth: authSvc, Ledger: ledgerSvc,
 		LoginLimiter:    ratelimit.New(cfg.LoginRateLimit, cfg.LoginRateWindow),
 		TransferLimiter: ratelimit.New(cfg.TransferRateLimit, cfg.TransferRateWindow),
+		RegisterLimiter: ratelimit.New(cfg.RegisterRateLimit, cfg.RegisterRateWindow),
 		Ready:           pool.Ping,
 		Readiness:       readiness,
 		Timeout:         30 * time.Second,

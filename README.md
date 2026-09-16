@@ -73,6 +73,7 @@ Arah dependensi: `transport → service → domain`, `repository → domain`. Do
 | Builder transaksi di **domain** | Di service/handler | Worker Fase 2 memakai jalur yang sama; tidak ada cara menyusun arah entry yang salah |
 | `mapError` satu tempat di transport | Status code di tiap handler | Kesalahan pemetaan (500 padahal 422) tidak bisa tersebar |
 | Rate limit in-memory, fail-closed | Redis | Fase 1 satu instance; interface memungkinkan Redis di Fase 2 |
+| Rate limit `/auth/register` per IP (ditambah pasca G-3) | Tanpa limiter | argon2id (64 MiB, t=3) mahal; registrasi anonim berulang bisa menghabiskan CPU/memori tanpa pembatas |
 | Tanpa `middleware.RealIP` | Percaya `X-Forwarded-For` | Header itu bisa dipalsukan siapa pun tanpa proxy tepercaya (GHSA-3fxj-6jh8-hvhx) |
 
 ## Hasil Pengujian
@@ -80,12 +81,13 @@ Arah dependensi: `transport → service → domain`, `repository → domain`. Do
 | Kategori | Hasil | Bukti |
 |---|---|---|
 | Unit (`-race`) | domain **99,1 %**, service 84,2 %, config 90 %, ratelimit 100 % | `make test` |
-| Integration (testcontainers, Postgres 17) | 20 test hijau: T-02, T-03, T-10, T-10b, T-11, K-05, repo user/token | `make test-int` |
-| **T-04** 100 goroutine dari Rp 1.000.000 @ Rp 50.000 + fee | **tepat 19 sukses**, sisa Rp 31.000, ×5 | `test/integration/concurrency_test.go` |
+| Integration (testcontainers, Postgres 17) | **24 test hijau**: T-02, T-03, T-10, T-10b, **T-10c**, T-11, K-05, repo user/token, register rate limit | `make test-int` |
+| **T-04** 100 goroutine dari Rp 1.000.000 @ Rp 50.000 + fee | **tepat 19 sukses**, sisa Rp 31.000, ×5, `conflict==0` diassert | `test/integration/concurrency_test.go` |
 | **T-05** 10 goroutine key sama | tepat 1 transaksi | idem |
 | **T-07** 50× A→B ∥ 50× B→A | 100 sukses, **0 deadlock** | idem |
 | **T-08/T-09** 1.000 transaksi acak | trial balance 0, drift 0 | idem |
-| **T-13** graceful shutdown | request 1,5 s selesai saat SIGTERM di 0,3 s | `internal/app/server_test.go` |
+| **T-10c** 10 reversal konkuren atas transaksi yang sama | tepat 1 sukses, 9× `ALREADY_REVERSED`, saldo pulih sekali | `test/integration/ledger_repo_test.go` |
+| **T-13** graceful shutdown | request 1,5 s selesai saat context dibatalkan di 0,3 s (simulasi SIGTERM lewat `signal.NotifyContext`; uji `kill -TERM` manual belum direkam sebagai bukti) | `internal/app/server_test.go` |
 | E2E HTTP | idempotency replay **byte-identik**, 400/401/403/404/409/413/422/429 | `test/integration/http_test.go` |
 | Trigger & constraint (psql, tanpa Go) | 14 skenario HARUS GAGAL semua gagal | `docs/evidence/trigger-test.md` |
 | Cursor pagination @200.000 entries | `Index Scan` 0,49 ms | `docs/evidence/explain-cursor.md` |
@@ -109,12 +111,15 @@ Penyebab utama yang teridentifikasi: **setiap transfer mengunci akun `SYSTEM_FEE
 2. **Dokumen spesifikasi salah hitung T-04.** Tabel menulis "20 sukses, saldo akhir 0"; kodenya benar 19 (1.000.000 ÷ 51.000 = 19,6). Fee mengubah aritmetika. Dokumen diperbaiki sebelum test ditulis — kalau tidak, test yang salah akan lulus dengan percaya diri.
 3. **Melepas `version` tidak memunculkan lost update** — berbeda dari dugaan dokumen. Eksperimen (`docs/evidence/eksperimen-kunci.md`) menunjukkan `UPDATE … SET balance = balance + $1` (relatif) + `CHECK (balance >= 0)` sudah menjaga uang; yang benar-benar rusak tanpa `FOR UPDATE ORDER BY id` adalah **deadlock** (99 dari 100 transfer silang). Pertahanan berlapis bekerja, dan tiap lapis ternyata menjaga hal yang berbeda.
 4. **Rate limit membatalkan load test pertama.** 99,98 % request k6 ditolak 401/429 karena batas login 5/15 menit per IP dan transfer 20/menit per user. Pembatas bekerja; load test memakai `docker-compose.load.yml` yang menaikkannya.
+5. **Bug idempotency ditemukan lewat review G-2 (model Fable, read-only), bukan test yang sudah ada.** `postIdempotent` yang kalah balapan idempotency membuang hasil `replay()` dan selalu mengembalikan `IDEMPOTENCY_IN_FLIGHT`, walau body request ternyata berbeda (seharusnya `IDEMPOTENCY_CONFLICT`). Klien dengan key sama + body beda yang kalah balapan akan retry selamanya menerima "coba lagi" yang tidak pernah menjadi benar. Ditemukan lewat review kode, ditutup dengan mengembalikan `err2` dari `replay()` apa adanya. Ini contoh nyata kenapa gerbang review terpisah (bukan sekadar test yang lulus) tetap perlu sebelum rilis.
 
 ## Yang akan diperbaiki berikutnya
 
 - **Baris panas fee** → sharding sub-akun fee atau akumulasi per periode, lalu ukur ulang SLO di Linux native.
 - **Fase 2**: outbox relay → RabbitMQ (tabel `outbox_events` sudah ditulis sejak Fase 1), worker `cmd/worker`, rate limit Redis, role DB aplikasi tanpa hak `UPDATE/DELETE/TRUNCATE` pada `entries`.
 - Migrasi produksi sebagai langkah deploy terpisah (`RUN_MIGRATIONS=false`), secret dari secret manager.
+- **Kerapian kecil (ditemukan review G-3, tidak menghalangi rilis):** `translate()` memetakan constraint `chk_normal_balance`/`chk_owner` (tabel `accounts`) ke sentinel `ErrInvalidReversalLink` yang namanya untuk reversal — benar secara HTTP (400 VALIDATION_ERROR) tapi salah nama. Pisahkan jadi `ErrIntegrityViolation` di Fase 1.1.
+- `/metrics` belum dibatasi jaringan (membocorkan hitungan route & login gagal) — batasi di reverse proxy saat deploy sungguhan.
 
 ## Dokumen
 

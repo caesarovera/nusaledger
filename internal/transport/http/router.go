@@ -24,6 +24,7 @@ type Deps struct {
 	Ledger          *service.Ledger
 	LoginLimiter    allower
 	TransferLimiter allower
+	RegisterLimiter allower // per IP; argon2id di register/login mahal, tanpa limiter bisa jadi vektor DoS (G-3)
 	// Ready dipanggil /readyz: cek DB. Saat shutdown, Readiness.Set(false) membuat /readyz 503 duluan.
 	Ready     func(ctx context.Context) error
 	Readiness *Readiness
@@ -95,7 +96,7 @@ func NewRouter(d Deps) http.Handler {
 		api.Use(middleware.NoCache)
 
 		api.Route("/auth", func(a chi.Router) {
-			a.Post("/register", auth.register)
+			a.With(rateLimitByIP(d.RegisterLimiter)).Post("/register", auth.register)
 			a.Post("/login", auth.login)
 			a.Post("/refresh", auth.refresh)
 			a.With(authenticate(d.JWT)).Post("/logout", auth.logout)

@@ -1,16 +1,19 @@
 # HANDOVER
 
-## Terakhir dikerjakan (2026-09-16) — DIHENTIKAN atas permintaan pemilik setelah Sesi 29
-Selesai: Sesi 1–29. Semua kode Fase 1, T-01…T-14 hijau (T-04 ×5), E2E HTTP hijau, lint 0 issue, govulncheck bersih, image 18,6 MB, `docker compose up` → ready 4 s, CI workflow, OpenAPI, README final, k6 dijalankan.
-Coverage: domain 99,1 %, service 84,2 %. Bukti lengkap di `docs/evidence/`. Jurnal sampai Sesi 28 (+ analisis k6 di `docs/evidence/k6.md`).
-**SLO latensi TIDAK tercapai** (177 tps, p95 515 ms, p99 568 ms) — correctness 100 %. Penyebab: baris panas `SYSTEM_FEE_REVENUE` (semua transfer mengunci akun fee yang sama) + Docker Desktop Windows. Belum diperbaiki, sengaja dicatat jujur di README dan k6.md.
-G-1 dilakukan inline saat menulis migration. G-2 dan G-3 (review Fable read-only) **belum** dijalankan.
+## Terakhir dikerjakan (2026-09-16) — G-2, G-3, dan tag v1.0.0
+Selesai: Sesi 1–29 + G-2 + G-3 + perbaikan hasil keduanya. Semua kode Fase 1, T-01…T-14 hijau (T-04 ×5), T-10c baru, E2E HTTP hijau (24 test integration), lint 0 issue, govulncheck bersih, image 18,6 MB, `docker compose up` → ready 4 s, CI workflow (lulus di GitHub, run pertama), OpenAPI, README final, k6 dijalankan.
+Coverage: domain 99,1 %, service 84,2 %. Bukti lengkap di `docs/evidence/`. Jurnal sampai Sesi 26 (G-2) — lihat entri terbaru.
+**SLO latensi TIDAK tercapai** (177 tps, p95 515 ms, p99 568 ms) — correctness 100 %. Penyebab: baris panas `SYSTEM_FEE_REVENUE`. Belum diperbaiki, dicatat jujur di README dan k6.md; ini keputusan sadar, bukan celah.
+
+**G-2** (Fable, read-only, atas `LedgerRepo.Post` & konkurensi): tidak ada temuan penciptaan/kehilangan uang atau deadlock. 4 perbaikan diterapkan & diverifikasi `-race`: konsistensi `Validate()` Type/ReversesID (`ErrInvalidReversalLink`), `translate()` melengkapi SQLSTATE (deadlock/serialization → retry, bukan 500), pre-check saldo overflow-safe, **bug nyata** di `postIdempotent` (kalah balapan idempotency salah mengembalikan IN_FLIGHT padahal seharusnya CONFLICT). Ditambah T-10c (10 reversal konkuren) dan assert `conflict==0` di T-04.
+
+**G-3** (Fable, read-only, release gate): kesimpulan **YA-DENGAN-CATATAN**. Satu temuan ditindaklanjuti sebelum tag: `/auth/register` tanpa rate limit (argon2id mahal, vektor DoS ringan) → ditambah `rateLimitByIP` + `REGISTER_RATE_LIMIT` (default 10/15 menit). Temuan minor lain (limiter login per email, `/metrics` publik, penamaan `ErrInvalidReversalLink` untuk constraint accounts) diterima sebagai trade-off Fase 1, dicatat di README.
 
 ## Berikutnya
-1. Sesi 30: `/security-review` pada seluruh diff, G-3 (review rilis), lalu tag `v1.0.0`.
-2. CI belum pernah jalan di GitHub (repo baru di-push) — cek hasil run pertama; kemungkinan perlu penyesuaian coverage gate di `ci.yml`.
-3. Perbaikan performa (opsional Fase 1.1): sharding akun fee → ukur ulang k6 di Linux native. Jangan mengubah `Post()` tanpa mengulang T-04…T-09.
-4. Jurnal Sesi 29–30 belum ditulis (isinya ada di `docs/evidence/k6.md` §Analisis).
+1. Tag `v1.0.0` setelah dokumen ini + JURNAL + docs/06 §10 tersinkron (sedang dikerjakan).
+2. Fase 1.1 (tidak menghalangi rilis): pisahkan sentinel `ErrIntegrityViolation` dari `ErrInvalidReversalLink` untuk constraint `chk_normal_balance`/`chk_owner`.
+3. Perbaikan performa (Fase 1.1/2): sharding akun fee → ukur ulang k6 di Linux native. Jangan mengubah `Post()` tanpa mengulang T-04…T-09.
+4. Fase 2: outbox relay, worker, rate limit Redis, batasi `/metrics` di jaringan.
 
 ## Keputusan yang sudah diambil
 - Semua keputusan docs/06 §2 (F-01…F-06, K-01…K-09) DISETUJUI pemilik proyek pada 2026-09-16.

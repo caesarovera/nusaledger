@@ -692,6 +692,57 @@ Ini bukan bug: ini **konsekuensi desain yang benar untuk correctness** dan baru 
 
 ---
 
-## Status akhir sesi (2026-09-16, dihentikan atas permintaan pemilik)
+## Sesi 26 — G-2: review PostTransaction & konkurensi, model Fable (2026-09-16)
 
-Sesi 1–29 selesai; Sesi 30 (security review, G-3, tag) belum. Ringkasan bukti ada di README §Hasil Pengujian. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.
+### Apa
+Dipanggil lewat Agent tool, `model: "fable"`, tools dibatasi Read/Grep/Glob (read-only), meninjau `ledger_repo.go`, `errors.go`, `service/ledger.go`, `transaction.go`, trigger migration, dan seluruh test konkurensi. Tidak ada file diubah oleh reviewer — semua perbaikan dikerjakan setelahnya oleh subagent terpisah (Sonnet, peran "mengerjakan").
+
+### Kenapa gerbang review terpisah, padahal semua test sudah hijau
+**Test membuktikan apa yang Anda pikirkan untuk diuji; review menemukan apa yang tidak Anda pikirkan.** Semua T-01…T-10b sudah hijau sebelum G-2, tetapi review menemukan bug nyata yang tidak tersentuh test manapun: lihat temuan #3 di bawah.
+
+### Hasil
+**Kesimpulan pertama (paling penting): tidak ada temuan yang bisa menciptakan/menghilangkan uang atau memicu deadlock.** Semua jalur mutasi saldo berada di bawah `FOR UPDATE ORDER BY id`.
+
+Tujuh temuan, tiga langsung ditindaklanjuti:
+
+1. **[Sedang] Badai key-sama menahan koneksi pool.** `INSERT ... ON CONFLICT DO NOTHING` membuat request kembar menunggu baris uncommitted pemenang. N request kembar = N-1 koneksi tertahan. Diterima sebagai keterbatasan Fase 1 (dicatat, tidak diperbaiki — perbaikannya butuh mekanisme coalescing yang di luar scope).
+2. **[Sedang] Tidak ada test reversal konkuren** → ditutup dengan **T-10c**.
+3. **[Rendah-sedang, BUG NYATA] Kalah balapan idempotency + hash beda → error salah.** `postIdempotent` membuang hasil `replay()` saat kalah balapan dan selalu mengembalikan `ErrIdempotencyInFlight`, padahal replay bisa mengembalikan `ErrIdempotencyConflict` (body beda). Klien akan retry selamanya menerima "coba lagi" yang tidak pernah menjadi benar. **Diperbaiki**: `return res, err2` apa adanya dari `replay()`.
+4. **[Rendah]** `Validate()` tidak menegakkan `Type==REVERSAL ⇔ ReversesID≠nil` → **diperbaiki** (sentinel `ErrInvalidReversalLink` baru).
+5. **[Rendah]** `translate()` tidak memetakan `chk_normal_balance`, `chk_owner`, deadlock (40P01), serialization (40001) → **diperbaiki** (dipetakan; lihat catatan penamaan di Sesi 30/G-3 di bawah).
+6. **[Rendah]** T-04 tidak mengassert `conflict==0` secara eksplisit → **ditambahkan**.
+7. **[Rendah]** Pre-check saldo `acc.Balance+int64(delta)` rawan overflow int64 → **diperbaiki** memakai `domain.Money.Add()`.
+
+### Kenapa ini bukti nilai model termahal di titik yang tepat
+Model murah (Sonnet) menghabiskan waktunya MENGERJAKAN — menulis kode sesuai spesifikasi yang sudah jelas. Model termahal (Fable) dipakai HANYA untuk membaca dan bertanya "apa yang belum diuji?" pada kode yang paling berisiko. Satu panggilan ini menemukan bug yang lolos dari 20+ test yang sudah ditulis sebelumnya — persis alasan §4 plan menaruh gerbang ini sebelum rilis, bukan menggantikan test.
+
+### Bukti
+Perbaikan diverifikasi `-race` penuh (unit + integration, T-04 ×3): semua hijau, tidak ada regresi. Commit `fix(g2): ...`.
+
+---
+
+## Sesi 30 — G-3 (release gate) dan penutupan Fase 1 (2026-09-16)
+
+### Apa
+G-3 dipanggil sama seperti G-2 (model Fable, read-only), tapi cakupannya lebih luas: Definition of Done PRD §6 dicocokkan satu-satu dengan artefak nyata di repo, kode hasil perbaikan G-2 ditinjau ulang, dan seluruh dokumen (README, HANDOVER, JURNAL, plan) dicek konsistensinya dengan kode yang sebenarnya.
+
+### Hasil
+**Kesimpulan: YA-DENGAN-CATATAN.** Tidak ada temuan kode kritis. Yang ditindaklanjuti sebelum tag:
+
+1. **DoD tanpa bukti penuh** (empat kotak, semua sudah jujur tercatat sebagai keterbatasan, bukan disembunyikan): SLO k6 (sudah ditulis gagal apa adanya), T-13 memakai simulasi context bukan sinyal OS sungguhan, replay idempotency hanya diuji 1× bukan 10× serial, `request_id` hanya mengalir di transport bukan "seluruh lapisan". README diperbaiki agar klaimnya presisi.
+2. **[Medium, ditindaklanjuti] `/auth/register` tanpa rate limit.** argon2id (64 MiB, t=3) per panggilan; tanpa pembatas, registrasi anonim berulang menghabiskan CPU/memori server. **Diperbaiki**: `rateLimitByIP` baru (`middleware.go`), diterapkan di route register, dikonfigurasi lewat `REGISTER_RATE_LIMIT`/`REGISTER_RATE_WINDOW` (default 10/15 menit), diuji `TestHTTP_RegisterRateLimit`.
+3. **[Rendah, diterima]** Limiter login per email bisa dipakai mengunci akun korban 15 menit — trade-off yang sudah disadari sejak spesifikasi (docs/03 §6), dicatat eksplisit di README.
+4. **[Rendah, diterima untuk Fase 1]** `/metrics` tanpa auth di port publik — dibatasi di jaringan saat deploy sungguhan, bukan di kode Fase 1.
+5. **[Rendah, dijadwalkan Fase 1.1]** `translate()` memetakan constraint `chk_normal_balance`/`chk_owner` (tabel `accounts`) ke sentinel `ErrInvalidReversalLink` yang namanya untuk reversal. Benar secara perilaku HTTP (400), salah secara penamaan. Dicatat di README, tidak menghalangi rilis.
+
+### Kenapa rate limit register layak menghentikan rilis padahal "hanya" temuan Medium
+**Biaya perbaikannya jauh lebih kecil daripada biaya insidennya.** Menambah satu middleware + satu field config + satu test adalah kerja setengah jam. Kalau dibiarkan dan seseorang menemukan endpoint publik yang memanggil fungsi hash mahal tanpa batas, itu bisa jadi laporan "denial of service" yang memalukan di portofolio yang justru mengaku paham keamanan (docs/03 §6 sudah menulis daftar rate limit lengkap — register yang terlewat adalah inkonsistensi, bukan keputusan sadar).
+
+### Bukti
+`TestHTTP_RegisterRateLimit` PASS; seluruh suite unit + integration `-race` tetap hijau setelah perubahan. Commit `fix(g3): ...`.
+
+---
+
+## Status akhir sesi (2026-09-16)
+
+Sesi 1–30 selesai, termasuk kedua gerbang review (G-2, G-3) dan seluruh perbaikannya. Fase 1 **selesai dan di-tag `v1.0.0`**. Ringkasan bukti ada di README §Hasil Pengujian dan §Bug yang saya temukan sendiri lewat test (lima bug, dua di antaranya ditemukan lewat review model, bukan test — ini bagian yang paling berharga diceritakan saat wawancara). Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.

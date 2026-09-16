@@ -156,7 +156,7 @@ Fase 1 tidak membangun panel admin. Peran `ADMIN` cukup dibuat lewat seeder.
 2. Middleware: validasi JWT → dapat user_id
 3. Handler: validasi format request (nominal, akun tujuan)
 4. Service: cek idempotency key
-   ├─ sudah ada + hash sama  → kembalikan hasil lama (200)
+   ├─ sudah ada + hash sama  → kembalikan hasil lama (201; kode status sama seperti permintaan pertama)
    ├─ sudah ada + hash beda  → tolak (409)
    └─ belum ada              → lanjut
 5. MULAI TRANSAKSI DATABASE

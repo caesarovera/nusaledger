@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -36,6 +37,7 @@ type apiServer struct {
 type serverOpts struct {
 	loginLimit    int
 	transferLimit int
+	registerLimit int
 }
 
 func newAPIServer(t *testing.T, o serverOpts) *apiServer {
@@ -47,6 +49,9 @@ func newAPIServer(t *testing.T, o serverOpts) *apiServer {
 	}
 	if o.transferLimit == 0 {
 		o.transferLimit = 1000
+	}
+	if o.registerLimit == 0 {
+		o.registerLimit = 1000
 	}
 
 	jwt, err := token.NewJWT("secret-untuk-test-yang-panjang-32b!", 15*time.Minute)
@@ -65,7 +70,8 @@ func newAPIServer(t *testing.T, o serverOpts) *apiServer {
 	router := httptransport.NewRouter(httptransport.Deps{
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Metrics: metrics.New(), JWT: jwt, Auth: authSvc, Ledger: ledgerSvc,
 		LoginLimiter: ratelimit.New(o.loginLimit, time.Minute), TransferLimiter: ratelimit.New(o.transferLimit, time.Minute),
-		Ready: testPool.Ping, Readiness: httptransport.NewReadiness(), Timeout: 10 * time.Second,
+		RegisterLimiter: ratelimit.New(o.registerLimit, time.Minute),
+		Ready:           testPool.Ping, Readiness: httptransport.NewReadiness(), Timeout: 10 * time.Second,
 	})
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
@@ -236,6 +242,20 @@ func TestHTTP_LoginRateLimit(t *testing.T) {
 		expect(t, s.do("POST", "/api/v1/auth/login", map[string]string{"email": "andi@test.local", "password": "salah"}, nil), 401, "UNAUTHENTICATED")
 	}
 	expect(t, s.do("POST", "/api/v1/auth/login", map[string]string{"email": "andi@test.local", "password": "rahasia123"}, nil), 429, "RATE_LIMITED")
+}
+
+// Temuan G-3: /auth/register memanggil argon2id (mahal) tanpa pembatas. Dibatasi per IP.
+func TestHTTP_RegisterRateLimit(t *testing.T) {
+	s := newAPIServer(t, serverOpts{registerLimit: 3})
+	for i := 0; i < 3; i++ {
+		r := s.do("POST", "/api/v1/auth/register", map[string]string{
+			"email": fmt.Sprintf("u%d@test.local", i), "password": "rahasia123", "full_name": "Uji",
+		}, nil)
+		expect(t, r, 201, "")
+	}
+	expect(t, s.do("POST", "/api/v1/auth/register", map[string]string{
+		"email": "u4@test.local", "password": "rahasia123", "full_name": "Uji",
+	}, nil), 429, "RATE_LIMITED")
 }
 
 func TestHTTP_UangIdempotencyDanTransfer(t *testing.T) {
