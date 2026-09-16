@@ -8,8 +8,11 @@ services:
       ADDR: ":8080"
       APP_ENV: development
       LOG_LEVEL: info
-      # di dalam jaringan compose, host-nya adalah nama service dan port container (5432)
-      DATABASE_URL: postgres://nusa:nusa_dev_only@postgres:5432/nusaledger?sslmode=disable
+      # Runtime WAJIB peran terbatas nusaledger_app (migration 000011) — tidak punya hak
+      # UPDATE/DELETE pada entries, sekalipun ada bug kode. Migrasi jalan sebagai owner
+      # 'nusa' lewat MIGRATION_DATABASE_URL, terpisah — nusaledger_app tidak bisa CREATE TABLE.
+      DATABASE_URL: postgres://nusaledger_app:app_dev_only_ganti_di_produksi@postgres:5432/nusaledger?sslmode=disable
+      MIGRATION_DATABASE_URL: postgres://nusa:nusa_dev_only@postgres:5432/nusaledger?sslmode=disable
       # DEV SAJA. Di produksi: secret manager, minimal 32 byte acak.
       JWT_SECRET: dev-only-secret-ganti-di-produksi-minimal-32-byte
       RUN_MIGRATIONS: "true"
@@ -31,7 +34,9 @@ services:
     container_name: nusaledger-worker
     environment:
       LOG_LEVEL: info
-      DATABASE_URL: postgres://nusa:nusa_dev_only@postgres:5432/nusaledger?sslmode=disable
+      # Worker JUGA connect sebagai nusaledger_app (peran terbatas) — hanya menyentuh
+      # outbox_events & processed_events, tidak pernah entries langsung.
+      DATABASE_URL: postgres://nusaledger_app:app_dev_only_ganti_di_produksi@postgres:5432/nusaledger?sslmode=disable
       RABBITMQ_URL: amqp://nusa:nusa_dev_only@rabbitmq:5672/
       RELAY_INTERVAL: 1s
       # TIDAK RUN_MIGRATIONS di sini: api sudah menjalankannya. Dua proses migrasi

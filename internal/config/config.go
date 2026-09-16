@@ -23,7 +23,12 @@ type Config struct {
 	Env       string `env:"APP_ENV" envDefault:"development"`
 	LogLevel  string `env:"LOG_LEVEL" envDefault:"info"`
 	// `required` saja tidak cukup: variabel yang ADA tapi KOSONG dianggap terisi. `notEmpty` menutupnya.
-	DatabaseURL string `env:"DATABASE_URL,required,notEmpty"`
+	// DatabaseURL dipakai RUNTIME (harus peran terbatas nusaledger_app, migration 000011 —
+	// tanpa hak UPDATE/DELETE pada entries). MigrationDatabaseURL (opsional) dipakai HANYA
+	// saat RunMigrations=true, harus peran owner (bisa CREATE TABLE/ROLE). Kosong = pakai
+	// DatabaseURL untuk keduanya (dev lokal tanpa peran terbatas, `make migrate-up` CLI).
+	DatabaseURL          string `env:"DATABASE_URL,required,notEmpty"`
+	MigrationDatabaseURL string `env:"MIGRATION_DATABASE_URL"`
 
 	JWTSecret       string        `env:"JWT_SECRET,required,notEmpty"`
 	AccessTokenTTL  time.Duration `env:"ACCESS_TOKEN_TTL" envDefault:"15m"`
@@ -92,3 +97,12 @@ func (c Config) validate() error {
 
 // IsProduction benar di lingkungan produksi; dipakai untuk mematikan pprof dsb.
 func (c Config) IsProduction() bool { return c.Env == EnvProduction }
+
+// MigrationURL mengembalikan koneksi yang dipakai untuk menjalankan migration:
+// MigrationDatabaseURL bila diset, jika tidak jatuh ke DatabaseURL.
+func (c Config) MigrationURL() string {
+	if c.MigrationDatabaseURL != "" {
+		return c.MigrationDatabaseURL
+	}
+	return c.DatabaseURL
+}

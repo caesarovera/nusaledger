@@ -156,10 +156,13 @@ docker compose up -d --build   # api + worker + postgres + rabbitmq, satu perint
 # RabbitMQ management UI: http://localhost:15673 (user/pass: nusa / nusa_dev_only)
 ```
 
+**Role database terbatas untuk `entries`** (migration `000011`, lapis kedua BR-04 docs/02 §2.6): `cmd/api` dan `cmd/worker` connect sebagai `nusaledger_app`, peran yang HAK AKSESNYA SENDIRI (bukan hanya trigger) tidak mengizinkan UPDATE/DELETE/TRUNCATE pada `entries` atau DELETE pada `transactions` — migrasi tetap jalan sebagai superuser lewat `MIGRATION_DATABASE_URL` terpisah. Dua ancaman berbeda ditutup dua lapis berbeda: trigger `forbid_mutation` menahan bug kode, REVOKE di level role menahan siapa pun yang connect dengan kredensial aplikasi dan mengetik SQL manual. Dibuktikan `TestAppRole_TidakBisaMengubahLedger` — menyambung sungguhan sebagai `nusaledger_app` (bukan superuser test), mendapat SQLSTATE `42501` (insufficient_privilege), berbeda dari trigger (`23514`).
+
 ## Yang akan diperbaiki berikutnya
 
 - ~~Baris panas fee~~ **selesai** (Sesi 33) — lihat §Load test di atas. p95 masih 10 ms di atas target; kandidat penyebab sisa: fsync WAL Postgres di Docker Desktop, bukan lagi akun fee.
-- **Fase 2, sisa item**: rate limit Redis (in-memory saat ini cukup untuk satu instance API, tapi `cmd/worker` beda proses — kalau `cmd/api` diskalakan >1 instance, rate limit in-memory per-instance tidak lagi konsisten), role DB aplikasi tanpa hak `UPDATE/DELETE/TRUNCATE` pada `entries` (sudah direkomendasikan sejak docs/02 §2.6, belum diimplementasikan), batasi `/metrics` di reverse proxy.
+- ~~Role DB terbatas untuk `entries`~~ **selesai** (Sesi 35) — lihat §Fase 2 di atas.
+- **Fase 2, sisa item**: rate limit Redis (in-memory saat ini cukup untuk satu instance API, tapi kalau `cmd/api` diskalakan >1 instance, rate limit in-memory per-instance tidak lagi konsisten), batasi `/metrics` di reverse proxy.
 - Migrasi produksi sebagai langkah deploy terpisah (`RUN_MIGRATIONS=false`), secret dari secret manager.
 - Pengukuran ulang di Linux native (bukan Docker Desktop Windows) untuk menutup selisih p95 10 ms yang tersisa.
 

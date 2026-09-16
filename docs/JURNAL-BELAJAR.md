@@ -919,6 +919,42 @@ Test ini secara sengaja TIDAK menyuruh relay mengirim ulang (relay tidak akan pe
 
 ---
 
+## Sesi 35 — Role database terbatas untuk `entries` (lapis kedua, docs/02 §2.6) (2026-09-16)
+
+### Apa
+Diminta "lanjutkan berdasarkan prioritas terpenting dahulu" atas 3 sisa item Fase 2. Dipilih role DB terbatas SEBAGAI PRIORITAS TERTINGGI (bukan rate limit Redis atau `/metrics`) — alasan urutan ditulis di bawah. Dibangun migration `000011_app_role`: peran `nusaledger_app` (LOGIN, bukan superuser) dibuat, diberi GRANT baseline SELECT/INSERT/UPDATE/DELETE ke semua tabel, lalu `entries` di-REVOKE UPDATE+DELETE (TRUNCATE otomatis tidak pernah ada karena baseline tidak menyebutnya) dan `transactions` di-REVOKE DELETE. `cmd/api` dan `cmd/worker` sekarang connect sebagai `nusaledger_app`; migrasi tetap jalan sebagai superuser `nusa` lewat `MIGRATION_DATABASE_URL` (variabel baru, terpisah dari `DATABASE_URL`, fallback ke `DATABASE_URL` kalau kosong — jadi `make migrate-up` di lokal tidak perlu berubah).
+
+### Kenapa item ini yang dikerjakan LEBIH DULU dari rate limit Redis dan `/metrics`
+Ketiganya sudah lama tercatat sebagai sisa Fase 2, tapi punya konsekuensi kegagalan yang berbeda jauh. Rate limit in-memory yang tidak konsisten lintas instance API "hanya" berarti batas laju sedikit lebih longgar dari niat — bukan uang salah. Pembatasan jaringan `/metrics` adalah kebocoran INFORMASI (nama endpoint, tingkat trafik), bukan kebocoran KENDALI atas data. Role DB yang tidak dibatasi berarti SATU bug kode saja (mis. lupa memakai fungsi yang benar, atau operator yang membuka `psql` langsung dengan niat baik tapi salah tabel) bisa menimpa baris `entries` yang seharusnya append-only — dan `entries` adalah SATU-SATUNYA sumber kebenaran saldo di seluruh sistem (docs/02 §2.1). Kerusakan di sana tidak bisa diperbaiki dengan restart atau rollback kode; harus rekonstruksi manual dari log. Urutan prioritas mengikuti besar kerusakan-kalau-gagal, bukan urutan disebut di HANDOVER.
+
+### Kenapa dua lapis (trigger DAN hak akses), bukan salah satu saja
+`forbid_mutation` (trigger, sudah ada sejak Fase 1) menahan BUG KODE — kode Go yang salah menulis `UPDATE entries` masih akan ditolak Postgres di level trigger. Tapi trigger hanya berjalan untuk peran yang PUNYA hak UPDATE/DELETE di kolom itu; trigger tidak mencegah siapa pun yang connect dengan kredensial aplikasi dan mengetik SQL manual, karena secara hak akses murni, peran itu memang BOLEH melakukannya (triggernya baru menolak setelah percobaan dimulai, dan — lebih penting — trigger bisa (secara teori) di-`DISABLE` oleh siapa pun yang punya hak `ALTER TABLE`, sesuatu yang peran aplikasi normal-nya TIDAK butuh). Mencabut hak akses di level role menutup jalur itu sebelum trigger sempat relevan: dua ancaman berbeda (bug kode vs operator/kredensial bocor), dua lapis berbeda, bukan duplikasi.
+
+### Kenapa nama database tidak boleh di-hardcode dalam migration
+Percobaan pertama menulis `GRANT CONNECT ON DATABASE nusaledger TO nusaledger_app` langsung. Ini GAGAL saat integration test jalan (testcontainers memberi nama database `testdb`, bukan `nusaledger`) dengan error `database "nusaledger" does not exist (SQLSTATE 3D000)` — migration yang sama harus benar di DUA lingkungan berbeda (dev pakai `nusaledger`, test pakai `testdb`), padahal `GRANT ... ON DATABASE` di PostgreSQL mensyaratkan identifier LITERAL, tidak menerima ekspresi atau parameter seperti query biasa. Solusinya SQL dinamis:
+```sql
+DO $$
+BEGIN
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO nusaledger_app', current_database());
+END$$;
+```
+`current_database()` selalu mengembalikan nama yang BENAR di lingkungan mana pun ia dijalankan; `format('%I', ...)` meng-quote identifier itu dengan aman (mencegah SQL injection kalau nama database pernah mengandung karakter aneh); `EXECUTE` menjalankan string SQL yang dihasilkan sebagai statement sungguhan. Pola ini berguna kapan pun sebuah migration harus menyebut nama database/objek yang BERBEDA antar lingkungan tapi tidak tersedia sebagai parameter di DDL PostgreSQL.
+
+### Kenapa test barunya BUKAN cuma mengulang T-03 (trigger)
+`TestSchema_T03_EntriesAppendOnly` (Fase 1) connect sebagai `test` (superuser di testcontainers) — peran itu SECARA HAK AKSES boleh UPDATE/DELETE `entries`, dan yang menahannya HANYA trigger. Test baru (`TestAppRole_TidakBisaMengubahLedger`) connect sebagai `nusaledger_app` sungguhan (bukan superuser) dan membuktikan hal yang BERBEDA: permintaan yang sama ditolak Postgres SEBELUM trigger sempat relevan, dengan SQLSTATE `42501` (`insufficient_privilege`) bukan `23514` (`check_violation`, kode yang dipakai trigger). Kalau trigger dihapus tidak sengaja di migration masa depan, T-03 akan mulai gagal (bagus, itu perannya) — tapi test role ini TETAP hijau, karena lapisannya independen. Ditambahkan juga assert bahwa `UPDATE transactions.status` (dibutuhkan reversal) TETAP diizinkan di level hak akses — membuktikan REVOKE-nya tepat sasaran, tidak sengaja terlalu ketat.
+
+### Contoh — membangun DSN peran lain dari DSN testcontainers
+```go
+dsn := strings.Replace(testDSN, "test:test@", "nusaledger_app:app_dev_only_ganti_di_produksi@", 1)
+pool, _ := pgxpool.New(ctx, dsn)   // koneksi BARU, peran BERBEDA, database SAMA
+```
+`testDSN` (variabel level-package baru di `main_test.go`, diisi dari `ctr.ConnectionString`) menyimpan DSN superuser `test` yang dipakai HAMPIR semua test lain. Test ini satu-satunya yang perlu menyambung sebagai peran LAIN untuk menguji hak akses peran itu sendiri — mengganti kredensial di DSN string yang sama (host/port/database tetap, hanya user:password berubah) lebih murah daripada membangun DSN dari nol.
+
+### Bukti
+`TestAppRole_TidakBisaMengubahLedger` PASS dengan `-race` (6 subtest: UPDATE/DELETE/TRUNCATE `entries` ditolak `42501`, DELETE `transactions` ditolak `42501`, SELECT/INSERT `entries` tetap boleh, UPDATE `transactions.status` tetap boleh). Suite integration penuh (30 test, termasuk T-03 lama) tetap hijau setelah migration baru ditambahkan — 22,8 detik. Lint (`golangci-lint`) 0 issue, `go vet` bersih, `govulncheck` 0 vulnerabilitas nyata (1 modul transitif tidak terpakai, sudah diverifikasi sejak Sesi 31).
+
+---
+
 ## Status akhir sesi (2026-09-16)
 
-Sesi 1–34 selesai: Fase 1 SELESAI TOTAL (v1.0.3), Fase 2 DIMULAI dengan slice pertama yang lengkap dan teruji end-to-end (outbox relay, RabbitMQ, consumer idempoten, binary worker terpisah). Sisa Fase 2: rate limit Redis, role DB terbatas untuk `entries`, pembatasan jaringan untuk `/metrics`. Ringkasan bukti ada di README §Fase 2, `docs/evidence/fase2-outbox.md`. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.
+Sesi 1–35 selesai: Fase 1 SELESAI TOTAL (v1.0.3), Fase 2 slice pertama (outbox) + role DB terbatas untuk `entries` (lapis kedua) selesai dan teruji. Sisa Fase 2: rate limit Redis, pembatasan jaringan untuk `/metrics`. Ringkasan bukti ada di README §Fase 2, `docs/evidence/fase2-outbox.md`. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.

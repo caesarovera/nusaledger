@@ -23,6 +23,11 @@ import (
 // testPool dipakai bersama oleh semua test di paket ini; tiap test memanggil resetDB.
 var testPool *pgxpool.Pool
 
+// testDSN (koneksi superuser "test") dipakai test yang perlu membangun DSN peran
+// LAIN — mis. menyambung sebagai nusaledger_app untuk membuktikan hak akses
+// (migration 000011) benar-benar ditegakkan Postgres, bukan hanya trigger.
+var testDSN string
+
 func TestMain(m *testing.M) {
 	ctx := context.Background()
 
@@ -42,6 +47,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatalf("mengambil DSN: %v", err)
 	}
+	testDSN = dsn
 	if err := dbmigrate.Up(dsn); err != nil {
 		log.Fatalf("migration: %v", err)
 	}

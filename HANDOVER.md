@@ -1,5 +1,15 @@
 # HANDOVER
 
+## Terakhir dikerjakan (2026-09-16, lanjutan) — Role DB terbatas untuk `entries` (Fase 2, prioritas tertinggi dari 3 sisa item)
+Diminta "lanjutkan berdasarkan prioritas terpenting dahulu" atas 3 sisa item Fase 2 (rate limit Redis, role DB, batas jaringan `/metrics`). Dipilih role DB LEBIH DULU: kegagalan tanpa lapis ini berarti data ledger yang salah (tidak bisa di-rollback lewat restart), sedangkan dua item lain "hanya" konsistensi rate limit dan kebocoran informasi — alasan lengkap di jurnal Sesi 35.
+
+**Dikerjakan:**
+- Migration `000011_app_role`: peran `nusaledger_app` (LOGIN, bukan superuser), GRANT baseline SELECT/INSERT/UPDATE/DELETE semua tabel, lalu REVOKE UPDATE+DELETE khusus `entries` dan REVOKE DELETE khusus `transactions`. Nama database TIDAK di-hardcode — pakai `current_database()` lewat `EXECUTE format(...)` supaya migration yang sama benar di dev (`nusaledger`) maupun testcontainers (`testdb`).
+- `internal/config.Config` + `cmd/worker` mendapat `MigrationDatabaseURL`/`MIGRATION_DATABASE_URL` (opsional, fallback ke `DatabaseURL`): migrasi tetap jalan sebagai superuser `nusa`, runtime `cmd/api`/`cmd/worker` connect sebagai `nusaledger_app` yang terbatas.
+- `docker-compose.yml`: `api` dan `worker` sekarang `DATABASE_URL` memakai `nusaledger_app`; `api` mendapat `MIGRATION_DATABASE_URL` terpisah (superuser) khusus untuk `RUN_MIGRATIONS`.
+- Test baru `TestAppRole_TidakBisaMengubahLedger` (6 subtest) — connect SUNGGUHAN sebagai `nusaledger_app` (bukan superuser `test` yang dipakai test lain), membuktikan UPDATE/DELETE/TRUNCATE `entries` dan DELETE `transactions` ditolak Postgres sendiri dengan SQLSTATE `42501`, BERBEDA dari trigger `forbid_mutation` (T-03, SQLSTATE `23514`) — dua lapis pertahanan independen, dibuktikan dengan dua test independen.
+- Diverifikasi: build OK, `go vet` bersih, `golangci-lint` 0 issue, unit `-race` semua paket OK, integration `-race` penuh 30 test (22,8 detik) OK termasuk test baru, `govulncheck` 0 vulnerabilitas nyata.
+
 ## Terakhir dikerjakan (2026-09-16, lanjutan) — Fase 2 dimulai: outbox relay + RabbitMQ + consumer
 Diminta "lanjutkan" setelah dikonfirmasi maksudnya memulai Fase 2 (docs/01 §1.3, sebelumnya di luar cakupan Fase 1 secara sengaja). Fase 2 TIDAK punya PRD sendiri seperti Fase 1 — dikerjakan dengan asumsi eksplisit mengikuti arah yang SUDAH dinyatakan di docs/02 §2.9 ("saat Fase 2 tiba, yang perlu ditambahkan hanya relay") dan docs/06: RabbitMQ, bukan Kafka.
 
@@ -55,9 +65,9 @@ Coverage: domain 99,1 %, service 84,2 %. Bukti lengkap di `docs/evidence/`. Jurn
 **G-3** (Fable, read-only, release gate): kesimpulan **YA-DENGAN-CATATAN**. Satu temuan ditindaklanjuti sebelum tag: `/auth/register` tanpa rate limit (argon2id mahal, vektor DoS ringan) → ditambah `rateLimitByIP` + `REGISTER_RATE_LIMIT` (default 10/15 menit). Temuan minor lain (limiter login per email, `/metrics` publik, penamaan `ErrInvalidReversalLink` untuk constraint accounts) diterima sebagai trade-off Fase 1, dicatat di README.
 
 ## Berikutnya
-**Fase 1 selesai total** (v1.0.3, sudah di-tag). **Fase 2 dimulai** — slice pertama (outbox relay + RabbitMQ + consumer) selesai dan terverifikasi.
-1. **Pertimbangkan tag `v1.1.0`** untuk memuat slice Fase 2 ini (`cmd/worker`, migration `000010`) — versi minor karena menambah kemampuan baru (bukan hanya patch), bukan `v1.0.4`.
-2. Fase 2, sisa item: rate limit Redis, role DB aplikasi tanpa hak `UPDATE/DELETE/TRUNCATE` pada `entries` (docs/02 §2.6), batasi `/metrics` di reverse proxy.
+**Fase 1 selesai total** (v1.0.3, sudah di-tag). **Fase 2 dimulai** — outbox relay + RabbitMQ + consumer, DAN role DB terbatas untuk `entries`, selesai dan terverifikasi.
+1. **Pertimbangkan tag `v1.1.0`** untuk memuat seluruh slice Fase 2 sampai titik ini (`cmd/worker`, migration `000010` & `000011`) — versi minor, bukan `v1.0.4`.
+2. Fase 2, sisa item (prioritas menurun): rate limit Redis (multi-instance API), batasi `/metrics` di reverse proxy (dokumentasi/infra, bukan kode).
 3. Pengukuran ulang di Linux native untuk menutup selisih p95 10 ms yang tersisa dari Sesi 33 (bukan blocker).
 
 ## Keputusan yang sudah diambil

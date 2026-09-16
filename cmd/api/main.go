@@ -51,7 +51,7 @@ func run() error {
 	defer stop()
 
 	if cfg.RunMigrations {
-		if err := dbmigrate.Up(cfg.DatabaseURL); err != nil {
+		if err := dbmigrate.Up(cfg.MigrationURL()); err != nil {
 			return err
 		}
 		log.Info("migration selesai")

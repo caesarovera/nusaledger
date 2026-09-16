@@ -27,11 +27,21 @@ import (
 // workerConfig sengaja terpisah dari internal/config.Config (config.go milik cmd/api):
 // worker tidak butuh JWT_SECRET, rate limit, atau setelan HTTP apa pun.
 type workerConfig struct {
-	DatabaseURL   string        `env:"DATABASE_URL,required,notEmpty"`
-	RabbitMQURL   string        `env:"RABBITMQ_URL,required,notEmpty"`
-	LogLevel      string        `env:"LOG_LEVEL" envDefault:"info"`
-	RunMigrations bool          `env:"RUN_MIGRATIONS" envDefault:"false"`
-	RelayInterval time.Duration `env:"RELAY_INTERVAL" envDefault:"1s"`
+	// DatabaseURL harus peran terbatas nusaledger_app (migration 000011); MigrationDatabaseURL
+	// (opsional, kosong = pakai DatabaseURL) harus peran owner — sama pola dengan cmd/api.
+	DatabaseURL          string        `env:"DATABASE_URL,required,notEmpty"`
+	MigrationDatabaseURL string        `env:"MIGRATION_DATABASE_URL"`
+	RabbitMQURL          string        `env:"RABBITMQ_URL,required,notEmpty"`
+	LogLevel             string        `env:"LOG_LEVEL" envDefault:"info"`
+	RunMigrations        bool          `env:"RUN_MIGRATIONS" envDefault:"false"`
+	RelayInterval        time.Duration `env:"RELAY_INTERVAL" envDefault:"1s"`
+}
+
+func (c workerConfig) migrationURL() string {
+	if c.MigrationDatabaseURL != "" {
+		return c.MigrationDatabaseURL
+	}
+	return c.DatabaseURL
 }
 
 func main() {
@@ -53,7 +63,7 @@ func run() error {
 	defer stop()
 
 	if cfg.RunMigrations {
-		if err := dbmigrate.Up(cfg.DatabaseURL); err != nil {
+		if err := dbmigrate.Up(cfg.migrationURL()); err != nil {
 			return err
 		}
 	}
