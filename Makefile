@@ -48,8 +48,12 @@ down: ## matikan compose (data tetap di volume)
 run: ## jalankan API lokal
 	go run ./cmd/api
 
-build: ## build binary statis
+run-worker: ## jalankan worker lokal (Fase 2: relay + consumer, butuh RabbitMQ jalan)
+	go run ./cmd/worker
+
+build: ## build binary statis (api + worker)
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/api ./cmd/api
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/worker ./cmd/worker
 
 tidy: ## rapikan go.mod
 	GOFLAGS= go mod tidy

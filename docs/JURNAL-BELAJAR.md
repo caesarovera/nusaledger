@@ -870,6 +870,55 @@ Ini bagian yang bagus dijelaskan saat wawancara: peningkatan tidak linear terhad
 
 ---
 
+## Sesi 34 — Fase 2 dimulai: outbox relay, RabbitMQ, consumer idempoten (2026-09-16)
+
+### Apa
+Fase 1 selesai total (Sesi 33). Diminta "lanjutkan"; setelah klarifikasi singkat, disepakati mulai Fase 2. TIDAK ada PRD Fase 2 di repo ini — docs 00–06 semuanya tentang Fase 1. Dikerjakan dengan **asumsi eksplisit** mengikuti arah yang sudah tertulis di docs/02 §2.9 (komentar pada tabel `outbox_events`, ditulis sejak Fase 1: *"menambah tabel baru itu murah; mengubah kode transfer yang sudah teruji itu mahal... saat Fase 2 tiba, yang perlu ditambahkan hanya relay"*) dan docs/06 (menyebut RabbitMQ, bukan Kafka).
+
+Dibangun: `internal/platform/broker` (topologi), `internal/platform/outbox` (relay), `internal/consumer` (consumer), `cmd/worker` (binary), migration `000010_processed_events`, service `rabbitmq` + `worker` di compose, `Dockerfile.worker`, test `TestOutbox_RelayDanConsumer_EndToEnd`.
+
+### Kenapa binary terpisah, kenapa relay DAN consumer di proses yang sama
+**Binary terpisah dari `cmd/api`** (bukan endpoint HTTP baru): profil skalanya beda total. API butuh banyak instance kecil yang responsif terhadap trafik; worker butuh sedikit instance yang memegang koneksi AMQP lama dan boleh berjalan tanpa terburu-buru. Menggabungkannya dalam satu binary berarti scaling API (mis. karena trafik HTTP naik) ikut menggandakan koneksi AMQP tanpa alasan.
+
+**Relay dan consumer dalam SATU proses `cmd/worker`** (bukan dua binary terpisah): pada volume Fase 2 ini, keduanya ringan dan tidak butuh skala independen. Kalau nanti consumer perlu 5× lebih banyak instance daripada relay (misalnya pemrosesan yang berat), itu alasan cukup untuk memisahkannya — bukan sekarang, saat belum ada bukti kebutuhan itu. Prinsip yang sama dengan kenapa fee TIDAK di-shard 64× di Sesi 33: jangan menambah kompleksitas sebelum diukur perlu.
+
+### Kenapa dua channel AMQP berbeda untuk relay dan consumer, bukan satu
+`newConfirmChannel` (untuk relay) mengaktifkan `Confirm(false)` — mode ini mengubah semantik SETIAP publish di channel itu. Consumer tidak pernah publish, jadi channel-nya tidak perlu (dan sebaiknya tidak) berbagi mode itu. Lebih penting: kalau consumer nack pesan atau channel-nya error, itu TIDAK BOLEH menutup kemampuan relay mengirim — dua channel terpisah mengisolasi kegagalan satu peran dari peran lain, prinsip yang sama dengan "setiap goroutine punya pemilik yang tahu kapan ia berhenti" yang sudah dipegang sejak `go-conventions` skill Fase 1.
+
+### Kenapa dua kelas error dibedakan di consumer (requeue vs DLQ)
+```go
+if err != nil {                    // gagal INSERT processed_events — biasanya SEMENTARA
+    d.Nack(false, true)            // requeue: coba lagi, kemungkinan besar akan berhasil
+}
+...
+if err := json.Unmarshal(...); err != nil {   // payload cacat — PERMANEN
+    d.Nack(false, false)                       // ke DLQ: mengulang tidak akan memperbaikinya
+}
+```
+Menyamakan keduanya (semua nack requeue=false, atau semua requeue=true) adalah kesalahan umum. Kegagalan sementara yang dikirim ke DLQ berarti kehilangan pesan yang sebenarnya valid hanya karena database sempat lambat sedetik. Kegagalan permanen yang di-requeue berarti pesan itu berputar selamanya di antara consumer dan broker tanpa pernah selesai — "poison message" yang menghabiskan resource tanpa progres.
+
+### Kenapa `processed_events` diisi SEBELUM "kerja" dilakukan, bukan setelah
+```go
+ct, err := a.db.Exec(ctx, `INSERT INTO processed_events (event_id, consumer) VALUES ($1, $2) ON CONFLICT DO NOTHING`, ...)
+if ct.RowsAffected() == 0 { /* sudah pernah, lewati */ }
+// baru SETELAH INI parsing payload & "kerja" consumer
+```
+Untuk consumer INI (audit log — kerjanya cuma logging), urutan ini tidak terlalu penting. Tapi ditulis dengan urutan yang BENAR untuk consumer yang kerjanya punya efek samping nyata (kirim email, kurangi stok): klaim dedup HARUS terjadi sebelum efek samping, supaya efek samping itu sendiri idempoten secara alami — persis pola yang sama dengan klaim idempotency key di `LedgerRepo.Post` Fase 1 (klaim dulu, baru kerja). Konsistensi pola ini bukan kebetulan; dua masalah yang tampak berbeda (idempotency HTTP vs idempotency consumer) punya bentuk solusi yang identik.
+
+### Contoh — cara membaca hasil uji redelivery
+```go
+sent2, _ := relay.PollOnce(ctx)     // 0 — tidak ada outbox_events baru untuk dikirim
+republish(t, relayCh)               // publish MANUAL event yang SAMA, simulasi redelivery broker
+// ... consumer jalan lagi ...
+if n := countRows(t, "processed_events"); n != 1 { t.Fatal(...) }   // TETAP 1, bukan 2
+```
+Test ini secara sengaja TIDAK menyuruh relay mengirim ulang (relay tidak akan pernah melakukan itu untuk event yang sudah `published_at` terisi) — sebaliknya, ia mensimulasikan apa yang RabbitMQ SENDIRI bisa lakukan tanpa sepengetahuan relay (redelivery karena consumer restart, network blip, dll). Idempotensi consumer harus tahan terhadap skenario ini walau relay-nya sendiri berkelakuan baik.
+
+### Bukti
+`TestOutbox_RelayDanConsumer_EndToEnd` PASS dengan `-race` (RabbitMQ sungguhan via testcontainers, 8 detik). Diverifikasi ULANG lewat `docker compose up` sungguhan (bukan hanya test): topup nyata via curl → `outbox_events.published_at` terisi dalam ~1 detik → `processed_events` bertambah 1 baris → log worker menunjukkan `event_id` yang SAMA mengalir dari database sampai consumer. `docker compose stop worker` (SIGTERM) → log "menyelesaikan pekerjaan yang sedang berjalan" sebelum proses berhenti. Image worker 12,9 MB. Detail: `docs/evidence/fase2-outbox.md`.
+
+---
+
 ## Status akhir sesi (2026-09-16)
 
-Sesi 1–33 selesai: Fase 1 SELESAI TOTAL — termasuk Fase 1.1, tiga gerbang review, audit keamanan menyeluruh, dan perbaikan performa (sharding akun fee, ×3,1 throughput). Tidak ada item dalam cakupan Fase 1 yang tersisa. Yang SENGAJA di luar cakupan: seluruh Fase 2 (docs/01 §1.3) dan pengukuran Linux native (selisih p95 10 ms, bukan blocker). Ringkasan bukti ada di README §Hasil Pengujian, §Load test, §Bug yang saya temukan sendiri lewat test, dan §Audit Keamanan Penuh. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.
+Sesi 1–34 selesai: Fase 1 SELESAI TOTAL (v1.0.3), Fase 2 DIMULAI dengan slice pertama yang lengkap dan teruji end-to-end (outbox relay, RabbitMQ, consumer idempoten, binary worker terpisah). Sisa Fase 2: rate limit Redis, role DB terbatas untuk `entries`, pembatasan jaringan untuk `/metrics`. Ringkasan bukti ada di README §Fase 2, `docs/evidence/fase2-outbox.md`. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.

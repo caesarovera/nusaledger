@@ -1,5 +1,20 @@
 # HANDOVER
 
+## Terakhir dikerjakan (2026-09-16, lanjutan) — Fase 2 dimulai: outbox relay + RabbitMQ + consumer
+Diminta "lanjutkan" setelah dikonfirmasi maksudnya memulai Fase 2 (docs/01 §1.3, sebelumnya di luar cakupan Fase 1 secara sengaja). Fase 2 TIDAK punya PRD sendiri seperti Fase 1 — dikerjakan dengan asumsi eksplisit mengikuti arah yang SUDAH dinyatakan di docs/02 §2.9 ("saat Fase 2 tiba, yang perlu ditambahkan hanya relay") dan docs/06: RabbitMQ, bukan Kafka.
+
+**Dikerjakan (slice pertama Fase 2):**
+- `migrations/000010_processed_events`: tabel dedup consumer (UNIQUE `event_id`).
+- `internal/platform/broker`: topologi RabbitMQ (exchange topic `ledger.events`, queue `ledger.audit-log` + DLQ `ledger.audit-log.dlq`), `Dial` dengan retry+backoff.
+- `internal/platform/outbox`: `Relay.PollOnce` — `FOR UPDATE SKIP LOCKED` (aman multi-instance), publisher confirm, `event_id` dibawa lewat AMQP `MessageId`.
+- `internal/consumer.AuditLog`: consumer IDEMPOTEN (insert `processed_events` sebelum kerja; redelivery dilewati, bukan diproses ulang). Payload cacat → DLQ (nack tanpa requeue); kegagalan DB → requeue (retry, bukan DLQ) — dua kelas error dibedakan sengaja.
+- `cmd/worker`: binary baru, DI manual seperti `cmd/api`, `signal.NotifyContext` untuk graceful shutdown.
+- `docker-compose.yml`: service `rabbitmq` (management UI di 127.0.0.1:15673) dan `worker`; `Dockerfile.worker` (image 12,9 MB).
+- Test: `TestOutbox_RelayDanConsumer_EndToEnd` (RabbitMQ sungguhan via testcontainers, `-race`) — jalur bahagia, publisher confirm, DAN redelivery idempoten (event yang sama dua kali → `processed_events` tetap 1 baris).
+- Diverifikasi jalan sungguhan lewat `docker compose up` dari nol: topup nyata → relay mengirim ~1 detik → consumer mencatat → `SIGTERM` graceful shutdown terbukti (`docs/evidence/fase2-outbox.md`).
+
+**Fase 2, sisa item (belum dikerjakan):** rate limit Redis (in-memory sekarang cukup untuk 1 instance API, tidak konsisten kalau diskalakan >1), role DB aplikasi tanpa hak `UPDATE/DELETE/TRUNCATE` pada `entries` (sudah direkomendasikan docs/02 §2.6, belum diimplementasikan), batasi `/metrics` di reverse proxy.
+
 ## Terakhir dikerjakan (2026-09-16, lanjutan) — Sharding akun fee (item performa terakhir)
 Diminta lagi "lanjutkan task yang belum selesai sesuai plan" — satu-satunya item Fase 1 yang masih tersisa (sharding akun fee, sebelumnya sengaja dilewati) dikerjakan:
 
@@ -40,10 +55,10 @@ Coverage: domain 99,1 %, service 84,2 %. Bukti lengkap di `docs/evidence/`. Jurn
 **G-3** (Fable, read-only, release gate): kesimpulan **YA-DENGAN-CATATAN**. Satu temuan ditindaklanjuti sebelum tag: `/auth/register` tanpa rate limit (argon2id mahal, vektor DoS ringan) → ditambah `rateLimitByIP` + `REGISTER_RATE_LIMIT` (default 10/15 menit). Temuan minor lain (limiter login per email, `/metrics` publik, penamaan `ErrInvalidReversalLink` untuk constraint accounts) diterima sebagai trade-off Fase 1, dicatat di README.
 
 ## Berikutnya
-**Fase 1 (termasuk Fase 1.1 dan perbaikan performa) SELESAI TOTAL.** Tidak ada item dalam cakupan Fase 1 yang tersisa. Sisa pekerjaan berada di luar cakupan Fase 1 secara sengaja (docs/01 §1.3), bukan "belum selesai":
-1. **Pertimbangkan tag `v1.0.3`** untuk memuat migration `000009_fee_shards` dan hasil k6 baru — `v1.0.2` tidak memuatnya.
-2. Pengukuran ulang di Linux native untuk menutup selisih p95 10 ms yang tersisa (bukan blocker; sudah ×3,1 lebih cepat di lingkungan yang sama).
-3. Fase 2: outbox relay, worker, rate limit Redis, batasi `/metrics` di jaringan.
+**Fase 1 selesai total** (v1.0.3, sudah di-tag). **Fase 2 dimulai** — slice pertama (outbox relay + RabbitMQ + consumer) selesai dan terverifikasi.
+1. **Pertimbangkan tag `v1.1.0`** untuk memuat slice Fase 2 ini (`cmd/worker`, migration `000010`) — versi minor karena menambah kemampuan baru (bukan hanya patch), bukan `v1.0.4`.
+2. Fase 2, sisa item: rate limit Redis, role DB aplikasi tanpa hak `UPDATE/DELETE/TRUNCATE` pada `entries` (docs/02 §2.6), batasi `/metrics` di reverse proxy.
+3. Pengukuran ulang di Linux native untuk menutup selisih p95 10 ms yang tersisa dari Sesi 33 (bukan blocker).
 
 ## Keputusan yang sudah diambil
 - Semua keputusan docs/06 §2 (F-01…F-06, K-01…K-09) DISETUJUI pemilik proyek pada 2026-09-16.

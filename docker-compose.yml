@@ -24,6 +24,41 @@ services:
         condition: service_healthy   # tunggu pg_isready, bukan sleep
     restart: unless-stopped
 
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: nusaledger-worker
+    environment:
+      LOG_LEVEL: info
+      DATABASE_URL: postgres://nusa:nusa_dev_only@postgres:5432/nusaledger?sslmode=disable
+      RABBITMQ_URL: amqp://nusa:nusa_dev_only@rabbitmq:5672/
+      RELAY_INTERVAL: 1s
+      # TIDAK RUN_MIGRATIONS di sini: api sudah menjalankannya. Dua proses migrasi
+      # bersamaan tidak berbahaya (advisory lock golang-migrate) tapi tidak perlu.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: nusaledger-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: nusa
+      RABBITMQ_DEFAULT_PASS: nusa_dev_only
+    ports:
+      # 5672 AMQP, 15672 UI management — keduanya dev-only, diikat loopback (F-2).
+      - "127.0.0.1:5673:5672"
+      - "127.0.0.1:15673:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   postgres:
     image: postgres:17-alpine
     container_name: nusaledger-postgres

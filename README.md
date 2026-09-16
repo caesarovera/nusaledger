@@ -139,10 +139,27 @@ Medium yang ditutup selain bug #6: JWT secret kini minimal 32 byte **tanpa syara
 - `/auth/register` membocorkan keberadaan email lewat `409 EMAIL_TAKEN` (orakel enumerasi), membatalkan sebagian usaha anti-enumerasi di `Login`.
 - `/transactions/{id}/reverse` belum punya rate limit khusus (admin-only, risiko rendah).
 
+## Fase 2 — Outbox relay, RabbitMQ, consumer idempoten (mulai Sesi 34)
+
+Fase 1 hanya MENULIS ke `outbox_events` (docs/02 §2.9); Fase 2 menambahkan yang membaca dan mengirimkannya:
+
+- **`cmd/worker`** — binary terpisah dari `cmd/api` (profil skala berbeda), menjalankan dua hal: **relay** dan **consumer**, dalam satu proses (cukup untuk volume Fase 2; pisahkan jadi dua binary bila salah satu perlu skala berbeda).
+- **Relay** (`internal/platform/outbox`) memoles `outbox_events WHERE published_at IS NULL` setiap `RELAY_INTERVAL` (default 1s) dengan `FOR UPDATE SKIP LOCKED` — aman dijalankan lebih dari satu instance bersamaan, tidak ada yang mengirim ganda. Publish memakai **publisher confirm** (menunggu ack broker, bukan sekadar "berhasil ditulis ke socket").
+- **Consumer** (`internal/consumer.AuditLog`) mencatat setiap event ke tabel `processed_events` (UNIQUE `event_id`) — **idempoten**: RabbitMQ hanya menjamin *at-least-once*, jadi event yang sama BISA datang dua kali; redelivery tidak memproses ulang.
+- **Topologi** (`internal/platform/broker`): exchange topic `ledger.events`, queue `ledger.audit-log` dengan DLQ `ledger.audit-log.dlq` (pesan cacat permanen di-nack tanpa requeue, mendarat di DLQ untuk diperiksa, bukan hilang atau diulang selamanya).
+- `event_id` (kolom `outbox_events`, sudah ada sejak Fase 1) dibawa lewat properti standar AMQP `MessageId` — satu-satunya kunci deduplikasi yang consumer punya.
+
+Dibuktikan `TestOutbox_RelayDanConsumer_EndToEnd` (RabbitMQ sungguhan via testcontainers, `-race`) DAN lewat `docker compose up` sungguhan (`docs/evidence/fase2-outbox.md`): topup nyata → relay mengirim dalam ~1 detik → consumer mencatat → *graceful shutdown* `SIGTERM` terbukti tidak mematikan di tengah pemrosesan.
+
+```bash
+docker compose up -d --build   # api + worker + postgres + rabbitmq, satu perintah
+# RabbitMQ management UI: http://localhost:15673 (user/pass: nusa / nusa_dev_only)
+```
+
 ## Yang akan diperbaiki berikutnya
 
 - ~~Baris panas fee~~ **selesai** (Sesi 33) — lihat §Load test di atas. p95 masih 10 ms di atas target; kandidat penyebab sisa: fsync WAL Postgres di Docker Desktop, bukan lagi akun fee.
-- **Fase 2** (di luar cakupan Fase 1 secara sengaja, docs/01 §1.3): outbox relay → RabbitMQ (tabel `outbox_events` sudah ditulis sejak Fase 1), worker `cmd/worker`, rate limit Redis, role DB aplikasi tanpa hak `UPDATE/DELETE/TRUNCATE` pada `entries`, batasi `/metrics` di reverse proxy.
+- **Fase 2, sisa item**: rate limit Redis (in-memory saat ini cukup untuk satu instance API, tapi `cmd/worker` beda proses — kalau `cmd/api` diskalakan >1 instance, rate limit in-memory per-instance tidak lagi konsisten), role DB aplikasi tanpa hak `UPDATE/DELETE/TRUNCATE` pada `entries` (sudah direkomendasikan sejak docs/02 §2.6, belum diimplementasikan), batasi `/metrics` di reverse proxy.
 - Migrasi produksi sebagai langkah deploy terpisah (`RUN_MIGRATIONS=false`), secret dari secret manager.
 - Pengukuran ulang di Linux native (bukan Docker Desktop Windows) untuk menutup selisih p95 10 ms yang tersisa.
 
@@ -161,12 +178,15 @@ Medium yang ditutup selain bug #6: JWT secret kini minimal 32 byte **tanpa syara
 
 ```
 cmd/api            entrypoint, DI manual, graceful shutdown, job drift, pprof loopback
+cmd/worker         Fase 2: entrypoint relay + consumer, binary terpisah dari api
 internal/domain    Money, Account, Entry, Transaction (+builder, Validate), error sentinel
 internal/service   Ledger, Auth, ports.go (interface konsumen), cursor
 internal/repository/postgres  LedgerRepo.Post (atomik), Account/User/Token/Idempotency repo, translate()
 internal/transport/http       router (chi), middleware, handler, DTO, mapError
-internal/platform  config, logger (redaksi), metrics, ratelimit, token (JWT), password (argon2id), dbmigrate
-migrations/        8 pasang up/down, ter-embed
-test/integration   testcontainers: schema, repo, konkurensi, E2E HTTP
+internal/platform  config, logger (redaksi), metrics, ratelimit, token (JWT), password (argon2id), dbmigrate,
+                   outbox (relay Fase 2), broker (topologi RabbitMQ Fase 2)
+internal/consumer  Fase 2: AuditLog — consumer idempoten (tabel processed_events)
+migrations/        10 pasang up/down, ter-embed
+test/integration   testcontainers: schema, repo, konkurensi, E2E HTTP, outbox+RabbitMQ
 test/load          k6
 ```

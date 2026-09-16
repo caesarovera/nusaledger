@@ -79,3 +79,19 @@ jobs:
           size=$(docker image inspect nusaledger:${{ github.sha }} --format '{{.Size}}')
           echo "ukuran: $((size/1024/1024)) MB"
           test "$size" -lt $((20*1024*1024))
+      - name: build image worker (Fase 2)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.worker
+          push: false
+          load: true
+          tags: nusaledger-worker:${{ github.sha }}
+          build-args: VERSION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: image worker < 20 MB
+        run: |
+          size=$(docker image inspect nusaledger-worker:${{ github.sha }} --format '{{.Size}}')
+          echo "ukuran: $((size/1024/1024)) MB"
+          test "$size" -lt $((20*1024*1024))

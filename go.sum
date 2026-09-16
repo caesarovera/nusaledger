@@ -128,6 +128,8 @@ github.com/prometheus/common v0.70.1 h1:1HvjP4D5oL3t8RsPlwxA9onvvStjtIHYE5XuuwOi
 github.com/prometheus/common v0.70.1/go.mod h1:VdFUQDMZK3VLkurFUVhia6uys/0suUp86TJz5qbJRhc=
 github.com/prometheus/procfs v0.21.1 h1:GljZCt+zSTS+NZq88cyQ1LjZ+RCHp3uVuabBWA5+OJI=
 github.com/prometheus/procfs v0.21.1/go.mod h1:aB55Cww9pdSJVHk0hUf0inxWyyjPogFIjmHKYgMKmtY=
+github.com/rabbitmq/amqp091-go v1.15.0 h1:LEQL4/yp48/Wigt6A6XOu18RQRo8ZHtB5I/KZJn+gkw=
+github.com/rabbitmq/amqp091-go v1.15.0/go.mod h1:Hy4jKW5kQART1u+JkDTF9YYOQUHXqMuhrgxOEeS7G4o=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
 github.com/rogpeppe/go-internal v1.14.1/go.mod h1:MaRKkUm5W0goXpeCfT7UZI6fk/L7L7so1lCWt35ZSgc=
 github.com/shirou/gopsutil/v4 v4.26.6 h1:Mzr/npDtQC/xpeEuQKHZt8Zo9CmPvhTj8nkR8w5TLDs=
@@ -145,6 +147,8 @@ github.com/testcontainers/testcontainers-go v0.44.0 h1:/Fwh6HY1mIikhnm9e7HwoxGyc
 github.com/testcontainers/testcontainers-go v0.44.0/go.mod h1:IcnwQrYTO86xHXu5bvMaBH7ATlbS3Qn1M1QWW3c66rE=
 github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0 h1:8fdv/9y3JMxjQ+ULAcOG8RtgeNu5t9XF9LolSXDuTwM=
 github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0/go.mod h1:CFr2LncGYokw+OKjXcr8ARCKG1SaC2UEnGxFBovE86g=
+github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.44.0 h1:apk1rmSJ5R7VbD25UB1KoWxP2LoQNybK+c2UooZdor0=
+github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.44.0/go.mod h1:LEXVQoMV/ZUnyHH+/Oaagwv0RUXzTFB9WxzBZGxqQ/0=
 github.com/tklauser/go-sysconf v0.4.0 h1:7H0uAN+7RkwWRaxhYXDLqa5V3LPrJeV8wmD9dRUgPQU=
 github.com/tklauser/go-sysconf v0.4.0/go.mod h1:8mTNWyog7H+MpKijp4VmKJAd2bbYQ2zuUwkYRbUArPI=
 github.com/tklauser/numcpus v0.12.0 h1:NR85qdvHA9pFse3x3weVZ0r0ST8R6l5RHbZrlRaqob4=

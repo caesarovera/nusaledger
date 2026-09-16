@@ -85,7 +85,8 @@ golang.org/x/crypto                           # argon2id
 github.com/caarlos0/env/v11                   # config dari env
 github.com/google/uuid
 github.com/prometheus/client_golang           # /metrics
-github.com/testcontainers/testcontainers-go   # + modules/postgres  (test saja)
+github.com/testcontainers/testcontainers-go   # + modules/postgres, modules/rabbitmq (test saja)
+github.com/rabbitmq/amqp091-go                # Fase 2: outbox relay & consumer (cmd/worker)
 log/slog                                      # stdlib, bukan zap/zerolog
 ```
 
