@@ -134,7 +134,7 @@ Medium yang ditutup selain bug #6: JWT secret kini minimal 32 byte **tanpa syara
 - `translate()` kini memetakan `chk_normal_balance`/`chk_owner` (tabel `accounts`) ke sentinel baru `ErrIntegrityViolation`, dipisah dari `ErrInvalidReversalLink` yang khusus untuk `chk_reversal_link` — namanya tidak lagi menyebut "reversal" untuk pelanggaran yang bukan soal reversal.
 
 **Diterima sebagai keterbatasan Fase 1, tidak ditutup** (Low/Info, tidak eksploitatif untuk repo publik ini):
-- `/metrics` tanpa autentikasi di port publik — membatasinya lewat kode akan merusak model *scraping* Prometheus standar; pembatasan yang benar ada di jaringan/reverse proxy saat deploy sungguhan.
+- `/metrics` tanpa autentikasi di port publik — membatasinya lewat kode akan merusak model *scraping* Prometheus standar; pembatasan yang benar ada di jaringan/reverse proxy saat deploy sungguhan (contoh konfigurasi nginx/Caddy/NetworkPolicy: `docs/deploy-metrics-network.md`). Di dev repo ini port sudah diikat `127.0.0.1` (F-2), jadi sudah tidak terjangkau LAN/Wi-Fi.
 - Rate limit login mengunci akun korban 15 menit jika penyerang tahu emailnya — trade-off standar rate-limit-per-akun, sudah dispesifikasikan sejak docs/03 §6.
 - `/auth/register` membocorkan keberadaan email lewat `409 EMAIL_TAKEN` (orakel enumerasi), membatalkan sebagian usaha anti-enumerasi di `Login`.
 - `/transactions/{id}/reverse` belum punya rate limit khusus (admin-only, risiko rendah).
@@ -165,9 +165,9 @@ docker compose up -d --build   # api + worker + postgres + rabbitmq, satu perint
 - ~~Baris panas fee~~ **selesai** (Sesi 33) — lihat §Load test di atas. p95 masih 10 ms di atas target; kandidat penyebab sisa: fsync WAL Postgres di Docker Desktop, bukan lagi akun fee.
 - ~~Role DB terbatas untuk `entries`~~ **selesai** (Sesi 35) — lihat §Fase 2 di atas.
 - ~~Rate limit Redis~~ **selesai** (Sesi 36) — lihat §Fase 2 di atas.
-- **Fase 2, satu-satunya sisa item**: batasi `/metrics` di reverse proxy — dokumentasi/infra (contoh konfigurasi nginx/Caddy), bukan kode; pembatasan jaringan bukan tanggung jawab aplikasi.
+- ~~Batasi `/metrics` di reverse proxy~~ **selesai** (Sesi 37, dokumentasi/infra — `docs/deploy-metrics-network.md`) — **Fase 2 SEKARANG SELESAI TOTAL.**
 - Migrasi produksi sebagai langkah deploy terpisah (`RUN_MIGRATIONS=false`), secret dari secret manager.
-- Pengukuran ulang di Linux native (bukan Docker Desktop Windows) untuk menutup selisih p95 10 ms yang tersisa.
+- Pengukuran ulang di Linux native (bukan Docker Desktop Windows) untuk menutup selisih p95 10 ms yang tersisa dari Sesi 33 (bukan blocker).
 
 ## Dokumen
 

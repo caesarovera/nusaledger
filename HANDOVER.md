@@ -1,5 +1,10 @@
 # HANDOVER
 
+## Terakhir dikerjakan (2026-09-16, lanjutan) — Batasi `/metrics` di jaringan (Fase 2, item terakhir — FASE 2 SELESAI TOTAL)
+Item ketiga dan terakhir dari "lanjutkan berdasarkan prioritas terpenting dahulu". Sengaja BUKAN perubahan kode: `/metrics` tanpa autentikasi di level aplikasi TETAP demikian (mengubahnya akan merusak model *scraping* Prometheus standar), pembatasan yang benar ada di jaringan. Ditulis `docs/deploy-metrics-network.md` — contoh konfigurasi nginx (`allow`/`deny` per CIDR), Caddy (`remote_ip` matcher), dan alternatif `NetworkPolicy` Kubernetes (lebih kuat: menempel di Pod, bukan per instance proxy) — plus penjelasan kenapa dev repo ini SUDAH aman (semua port diikat `127.0.0.1` sejak audit F-2).
+
+**Fase 2 sekarang selesai total**: outbox relay (Sesi 34), role DB terbatas (Sesi 35), rate limit Redis (Sesi 36), pembatasan jaringan `/metrics` (Sesi 37, dokumentasi). Tidak ada item Fase 2 yang tersisa.
+
 ## Terakhir dikerjakan (2026-09-16, lanjutan) — Rate limit Redis opsional (Fase 2, prioritas kedua dari 3 sisa item)
 Lanjutan langsung dari item sebelumnya (role DB). Dikerjakan `RedisLimiter` (`internal/platform/ratelimit/redis.go`) yang mengimplementasikan kontrak `allower` (`Allow(key string) bool`) yang SAMA dengan `Limiter` in-memory — jadi `router.go`/`middleware.go` tidak disentuh sama sekali.
 
@@ -76,10 +81,10 @@ Coverage: domain 99,1 %, service 84,2 %. Bukti lengkap di `docs/evidence/`. Jurn
 **G-3** (Fable, read-only, release gate): kesimpulan **YA-DENGAN-CATATAN**. Satu temuan ditindaklanjuti sebelum tag: `/auth/register` tanpa rate limit (argon2id mahal, vektor DoS ringan) → ditambah `rateLimitByIP` + `REGISTER_RATE_LIMIT` (default 10/15 menit). Temuan minor lain (limiter login per email, `/metrics` publik, penamaan `ErrInvalidReversalLink` untuk constraint accounts) diterima sebagai trade-off Fase 1, dicatat di README.
 
 ## Berikutnya
-**Fase 1 selesai total** (v1.0.3, sudah di-tag). **Fase 2**: outbox relay + RabbitMQ + consumer, role DB terbatas untuk `entries`, DAN rate limit Redis opsional — semua selesai dan terverifikasi.
-1. **Pertimbangkan tag `v1.1.0`** untuk memuat seluruh slice Fase 2 sampai titik ini (`cmd/worker`, migration `000010` & `000011`, `RedisLimiter`) — versi minor, bukan `v1.0.4`.
-2. Fase 2, satu-satunya sisa item: batasi `/metrics` di reverse proxy — ini dokumentasi/infra (contoh konfigurasi nginx/Caddy), bukan kode, karena pembatasan jaringan bukan tanggung jawab aplikasi.
-3. Pengukuran ulang di Linux native untuk menutup selisih p95 10 ms yang tersisa dari Sesi 33 (bukan blocker).
+**Fase 1 SELESAI TOTAL** (v1.0.3, sudah di-tag). **Fase 2 SEKARANG SELESAI TOTAL JUGA** — outbox relay, role DB terbatas, rate limit Redis, pembatasan jaringan `/metrics`, semua selesai dan terverifikasi. Tidak ada item Fase 2 yang tersisa.
+1. **Pertimbangkan tag `v1.1.0`** untuk memuat seluruh Fase 2 (`cmd/worker`, migration `000010` & `000011`, `RedisLimiter`, `docs/deploy-metrics-network.md`) — versi minor, bukan `v1.0.4`.
+2. Satu-satunya item lama yang masih terbuka di seluruh proyek: pengukuran ulang k6 di Linux native untuk menutup selisih p95 10 ms dari Sesi 33 (bukan blocker, dicatat sadar sebagai keterbatasan Docker Desktop Windows).
+3. Tidak ada rencana Fase 3 yang dikunci — kalau diminta melanjutkan lagi, tanyakan dulu arah yang diinginkan (Fase 2 tidak punya PRD sejak awal; sudah dikerjakan atas asumsi eksplisit yang dicatat di jurnal Sesi 34).
 
 ## Keputusan yang sudah diambil
 - Semua keputusan docs/06 §2 (F-01…F-06, K-01…K-09) DISETUJUI pemilik proyek pada 2026-09-16.

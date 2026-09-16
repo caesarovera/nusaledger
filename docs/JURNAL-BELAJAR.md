@@ -1005,6 +1005,29 @@ Tiga test baru (`test/integration/ratelimit_redis_test.go`, Redis sungguhan via 
 
 ---
 
+## Sesi 37 — Pembatasan jaringan untuk `/metrics`: item TERAKHIR Fase 2 (2026-09-16)
+
+### Apa
+Item ketiga (prioritas terendah, sesuai urutan yang ditetapkan di Sesi 35) dari "lanjutkan berdasarkan prioritas terpenting dahulu". Ditulis `docs/deploy-metrics-network.md`: contoh konfigurasi nginx (`location /metrics { allow <CIDR>; deny all; }`), Caddy (`remote_ip` matcher), dan `NetworkPolicy` Kubernetes sebagai alternatif yang lebih kuat. **Tidak ada satu baris kode pun yang diubah** untuk item ini — keputusan ini sendiri adalah pelajarannya.
+
+### Kenapa TIDAK ditutup dengan kode, padahal dua item sebelumnya (role DB, rate limit Redis) keduanya kode
+Godaan alaminya: kalau dua sisa item sebelumnya berhasil "diselesaikan dengan menulis kode", kenapa yang ketiga tidak begitu juga? Karena sifat ancamannya BEDA. Role DB dan rate limit adalah kontrol atas TINDAKAN yang boleh dilakukan APLIKASI itu sendiri terhadap datanya — itu memang tanggung jawab kode. `/metrics` publik adalah soal SIAPA yang boleh menjangkau PORT — itu adalah pertanyaan topologi jaringan, dan aplikasi (proses Go yang listen di satu port) secara struktural TIDAK PUNYA cara mengetahui atau mengontrol jaringan mana yang boleh menjangkaunya lebih dulu selain menutup portnya seluruhnya (yang berarti Prometheus, yang MEMANG seharusnya bisa scrape, juga tidak bisa). Memaksa ini menjadi masalah kode (mis. cek header `X-Forwarded-For` atau daftar IP di handler) berarti mengimpor masalah baru yang README ini sendiri sudah mencatat sebagai kerentanan nyata di baris lain (`middleware.RealIP`, GHSA-3fxj-6jh8-hvhx: header itu bisa dipalsukan tanpa proxy tepercaya) — solusi "kode" untuk masalah jaringan sering diam-diam MEMPERKENALKAN kerentanan jaringan yang baru.
+
+### Kenapa `NetworkPolicy` disebut "lebih kuat" daripada aturan CIDR di reverse proxy
+Aturan `allow`/`deny` di nginx/Caddy hanya berlaku KALAU request itu benar-benar melewati proxy itu. Kalau ada jalur lain menuju port aplikasi (mis. container lain di jaringan Docker/Kubernetes yang sama, yang bukan proxy, connect langsung ke `api:8080`), aturan di proxy tidak pernah dilewati — dan port aplikasi itu sendiri tidak punya pembatasan apa pun. `NetworkPolicy` Kubernetes (atau security group/firewall level VPC) menempel pada TUJUAN (Pod/instance `api`), bukan pada satu jalur masuk tertentu — closed-by-default lalu dibuka HANYA untuk namespace/security-group yang disebut, apa pun jalur yang dicoba.
+
+### Contoh — kenapa dev repo ini sudah "cukup aman" tanpa dokumen ini
+```yaml
+ports:
+  - "127.0.0.1:8081:8080"   # docker-compose.yml, sejak audit F-2 (Sesi 31)
+```
+`127.0.0.1` di sisi HOST berarti port itu hanya bisa dijangkau dari mesin yang sama — bukan dari perangkat lain di Wi-Fi/LAN yang sama. Untuk repo portofolio yang jalan di laptop sendiri, ini SUDAH cukup; dokumen `docs/deploy-metrics-network.md` menjelaskan langkah TAMBAHAN yang baru relevan kalau ini benar-benar di-deploy ke server yang diakses banyak orang/proses — perbedaan konteks ini ditulis eksplisit di dokumennya sendiri, supaya siapa pun yang membaca tidak salah mengira dev setup ini kurang aman.
+
+### Bukti
+Tidak ada test otomatis untuk dokumen (bukan kode). Diverifikasi manual: kedua contoh konfigurasi (nginx, Caddy) memakai sintaks yang valid untuk versi yang dipakai proyek ini kalaupun di-deploy (tidak dijalankan sungguhan — repo ini tidak punya reverse proxy di compose, dan menambah satu hanya untuk membuktikan dokumen ini akan menjadi kompleksitas yang tidak diminta siapa pun, bertentangan dengan prinsip yang sama yang menahan sharding fee 64× di Sesi 33).
+
+---
+
 ## Status akhir sesi (2026-09-16)
 
-Sesi 1–36 selesai: Fase 1 SELESAI TOTAL (v1.0.3). Fase 2: outbox relay (Sesi 34), role DB terbatas untuk `entries` (Sesi 35), rate limit Redis opsional (Sesi 36) — ketiganya selesai dan teruji end-to-end, bukan hanya unit test. Sisa Fase 2: pembatasan jaringan untuk `/metrics` (dokumentasi/infra, bukan kode — lihat README §Yang akan diperbaiki). Ringkasan bukti ada di README §Fase 2, `docs/evidence/fase2-outbox.md`. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.
+Sesi 1–37 selesai. **Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SEKARANG SELESAI TOTAL JUGA**: outbox relay (Sesi 34), role DB terbatas untuk `entries` (Sesi 35), rate limit Redis opsional (Sesi 36), pembatasan jaringan `/metrics` (Sesi 37) — tidak ada item Fase 2 yang tersisa. Satu-satunya keterbatasan yang masih terbuka di seluruh proyek: p95 10 ms di atas target dari pengukuran k6 di Docker Desktop Windows (Sesi 33), dicatat sadar sebagai keterbatasan lingkungan, bukan bug. Semua keputusan, jebakan, dan alasan — dari baris pertama `domain.Money` sampai dokumen jaringan terakhir ini — tercatat di jurnal ini agar bisa diulang manual dari repo kosong.
