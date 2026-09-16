@@ -13,11 +13,15 @@ import (
 	"github.com/caesarovera/nusaledger/internal/domain"
 )
 
-// id akun sistem hasil seed setelah RESTART IDENTITY: 1 CASH, 2 FEE, 3 SUSPENSE.
+// id akun sistem hasil seed setelah RESTART IDENTITY: 1 CASH, 2..9 FEE (8 shard,
+// migration 000009 — perbaikan performa), 10 SUSPENSE. sysFeeID (shard PERTAMA)
+// dipakai test yang membangun transaksi manual lewat domain.NewTransfer langsung
+// (bypass service.Ledger, jadi TIDAK terpengaruh pickFeeShard() acak di service).
 const (
-	sysCashID     = int64(1)
-	sysFeeID      = int64(2)
-	sysSuspenseID = int64(3)
+	sysCashID       = int64(1)
+	sysFeeID        = int64(2)
+	sysFeeShardLast = int64(9)
+	sysSuspenseID   = int64(10)
 )
 
 func testCtx(t *testing.T) context.Context {
@@ -38,14 +42,31 @@ func resetDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reset db: %v", err)
 	}
-	_, err = testPool.Exec(ctx, `
-		INSERT INTO accounts (account_type, normal_balance, user_id) VALUES
-		    ('SYSTEM_CASH',        'DEBIT',  NULL),
-		    ('SYSTEM_FEE_REVENUE', 'CREDIT', NULL),
-		    ('SYSTEM_SUSPENSE',    'CREDIT', NULL)`)
-	if err != nil {
-		t.Fatalf("seed akun sistem: %v", err)
+	// Urutan INSERT menentukan id (RESTART IDENTITY): 1=CASH, 2..9=FEE (8 shard,
+	// migration 000009), 10=SUSPENSE — HARUS sama dengan konstanta di atas.
+	if _, err := testPool.Exec(ctx, `INSERT INTO accounts (account_type, normal_balance, user_id) VALUES ('SYSTEM_CASH', 'DEBIT', NULL)`); err != nil {
+		t.Fatalf("seed SYSTEM_CASH: %v", err)
 	}
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO accounts (account_type, normal_balance, user_id)
+		SELECT 'SYSTEM_FEE_REVENUE', 'CREDIT', NULL FROM generate_series(1, 8)`); err != nil {
+		t.Fatalf("seed shard SYSTEM_FEE_REVENUE: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `INSERT INTO accounts (account_type, normal_balance, user_id) VALUES ('SYSTEM_SUSPENSE', 'CREDIT', NULL)`); err != nil {
+		t.Fatalf("seed SYSTEM_SUSPENSE: %v", err)
+	}
+}
+
+// feeTotalBalance menjumlahkan saldo SEMUA shard SYSTEM_FEE_REVENUE — dipakai untuk
+// menguji jalur yang lewat service.Ledger.Transfer (pickFeeShard acak), berbeda dari
+// sysFeeID yang menyasar shard PERTAMA secara spesifik untuk test level-repository.
+func feeTotalBalance(t *testing.T) domain.Money {
+	t.Helper()
+	var total int64
+	if err := testPool.QueryRow(testCtx(t), `SELECT COALESCE(SUM(balance), 0) FROM accounts WHERE account_type = 'SYSTEM_FEE_REVENUE'`).Scan(&total); err != nil {
+		t.Fatalf("total saldo shard fee: %v", err)
+	}
+	return domain.Money(total)
 }
 
 // seedUser membuat pengguna dan mengembalikan id internalnya.

@@ -76,7 +76,8 @@ func (r *AccountRepo) GetWalletByUserID(ctx context.Context, userID int64) (*dom
 	return a, nil
 }
 
-// SystemAccount mengambil akun sistem berdasarkan jenisnya (tepat satu per jenis).
+// SystemAccount mengambil akun sistem berdasarkan jenisnya (tepat satu per jenis:
+// SYSTEM_CASH, SYSTEM_SUSPENSE — ditegakkan idx_accounts_system_singleton).
 func (r *AccountRepo) SystemAccount(ctx context.Context, typ domain.AccountType) (*domain.Account, error) {
 	a, err := scanAccount(r.db.QueryRow(ctx, `
 		SELECT `+accountColumns+` FROM accounts
@@ -85,6 +86,32 @@ func (r *AccountRepo) SystemAccount(ctx context.Context, typ domain.AccountType)
 		return nil, fmt.Errorf("ambil akun sistem %s: %w", typ, err)
 	}
 	return a, nil
+}
+
+// SystemAccounts mengambil SEMUA akun sistem berjenis typ (jamak) — dipakai untuk
+// SYSTEM_FEE_REVENUE yang di-shard (perbaikan performa, migration 000009): boleh
+// lebih dari satu baris, sengaja tidak ditegakkan unique index.
+func (r *AccountRepo) SystemAccounts(ctx context.Context, typ domain.AccountType) ([]*domain.Account, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT `+accountColumns+` FROM accounts
+		WHERE account_type = $1 AND user_id IS NULL`, string(typ))
+	if err != nil {
+		return nil, fmt.Errorf("ambil akun sistem %s: %w", typ, err)
+	}
+	defer rows.Close()
+
+	var out []*domain.Account
+	for rows.Next() {
+		a, err := scanAccount(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan akun sistem %s: %w", typ, err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows akun sistem %s: %w", typ, err)
+	}
+	return out, nil
 }
 
 // ListEntries mengembalikan mutasi akun, terbaru dulu, cursor pada id (docs/02 §3.3).

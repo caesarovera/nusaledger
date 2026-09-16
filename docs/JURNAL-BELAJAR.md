@@ -827,6 +827,49 @@ golangci-lint run                                          0 issues
 
 ---
 
+## Sesi 33 — Sharding akun fee: item performa terakhir (2026-09-16)
+
+### Apa
+Diminta lagi "lanjutkan task yang belum selesai sesuai plan" — satu-satunya item Fase 1 yang masih tersisa. Sebelumnya dilewati dengan alasan "butuh Linux native"; dikerjakan ulang setelah menyadari perbandingan RELATIF (sebelum vs setelah, lingkungan IDENTIK) tetap sah untuk mengisolasi efek satu perubahan, walau bukan pengukuran produksi Linux yang sesungguhnya.
+
+Urutan kerja:
+1. **Cek dulu blast radius sebelum menulis kode** — grep semua pemakaian `sysFeeID` di test. Temuan penting: SEMUA test correctness (T-04, T-07, T-08/09, reversal) memanggil `domain.NewTransfer` LANGSUNG di level repository, melewati `service.Ledger.Transfer` sama sekali. Karena sharding diimplementasikan HANYA di service layer (`pickFeeShard()`), test-test itu tetap deterministik dan tidak perlu diubah sama sekali. Ini mengubah keputusan dari "terlalu berisiko" jadi "aman dikerjakan" — analisis dampak SEBELUM menulis kode mengubah kalkulasi risiko sepenuhnya.
+2. Migration `000009_fee_shards`: ganti index unik (yang mewajibkan tepat satu baris per JENIS akun sistem) dengan index yang hanya berlaku untuk `SYSTEM_CASH`/`SYSTEM_SUSPENSE`; tambah 7 baris `SYSTEM_FEE_REVENUE` (total 8).
+3. `AccountStore.SystemAccounts` (method baru, jamak) → `service.Ledger.feeIDs []int64` → `pickFeeShard()` memilih satu ID secara acak per transfer.
+4. `resetDB` test helper diperbarui menanam 8 shard, bukan 1 — kalau tidak, SEMUA test HTTP (yang lewat service layer) diam-diam tetap hanya punya 1 akun fee dan sharding tidak pernah benar-benar teruji.
+5. k6 diulang di lingkungan yang sama.
+
+### Kenapa risikonya kecil — dan kenapa itu HARUS diverifikasi, bukan diasumsikan
+Poin 1 di atas adalah bagian terpenting sesi ini. Godaan alaminya: "sharding itu perubahan besar, berisiko tinggi, tunda saja." Tapi "besar" dan "berisiko" adalah dua hal berbeda — grep 30 detik membuktikan blast radius sesungguhnya kecil, KARENA desain proyek ini SEJAK AWAL memisahkan "test correctness" (langsung ke domain/repository, deterministik) dari "test alur pengguna" (lewat HTTP/service). Pemisahan lapisan yang dijaga ketat sejak Sesi 1 (transport → service → domain) itulah yang membuat perubahan di SATU lapisan (service) bisa dilakukan dengan percaya diri tanpa merusak lapisan lain. Ini bukan kebetulan — ini bayaran dari disiplin arsitektur yang konsisten sejak awal.
+
+**Kenapa index diganti, bukan sekadar di-drop:** kalau index unik dihapus tanpa pengganti, tidak ada apa pun yang mencegah SYSTEM_CASH atau SYSTEM_SUSPENSE tiba-tiba punya dua baris suatu hari (bug aplikasi, migrasi ceroboh). Index barunya tetap menegakkan "tepat satu" untuk KEDUA akun itu — hanya SYSTEM_FEE_REVENUE yang sengaja dibebaskan. Constraint yang tepat sasaran, bukan constraint yang dihapus.
+
+**Kenapa acak, bukan round-robin atau hash:** transfer-transfer di production adalah request independen tanpa urutan yang berarti — round-robin butuh state bersama (kontensi baru!), hash butuh sesuatu yang stabil untuk di-hash (tidak ada yang alami di sini). Acak murni (`math/rand/v2`) sudah cukup untuk MENGURANGI kontensi; tidak perlu distribusi sempurna, hanya perlu "tidak semua di satu baris".
+
+### Hasil (lingkungan sama, sebelum vs setelah)
+| | Sebelum | Setelah |
+|---|---|---|
+| Throughput | 177 tps | **546 tps** (×3,1) |
+| p95 | 515 ms | **210 ms** |
+| p99 | 568 ms | **288 ms** (lulus target 500 ms) |
+| Transfer/3 menit | 33.340 | **104.333** |
+
+Trial balance tetap 0, drift tetap 0, fee tersebar ke semua 8 shard dengan selisih <2% antar shard — bukan diam-diam tetap satu akun. p95 210 ms masih 10 ms di atas target 200 ms; dianalisis sebagai kemungkinan sisa kontensi di fsync WAL Postgres pada Docker Desktop, bukan lagi akun fee (yang sudah terbukti BUKAN lagi penyebab dominan).
+
+### Contoh — kenapa peningkatannya ~3× bukan ~8× (delapan shard)
+```
+Setiap transfer MENGUNCI TIGA baris: dompet pengirim, dompet penerima, satu shard fee.
+Sharding menghilangkan kontensi pada baris KETIGA saja.
+Baris PERTAMA dan KEDUA (dompet asli) tidak bisa di-shard — itu identitas akun sungguhan,
+bukan agregat yang boleh dipecah sembarangan.
+```
+Ini bagian yang bagus dijelaskan saat wawancara: peningkatan tidak linear terhadap jumlah shard karena fee hanya SATU dari tiga sumber kontensi per transfer — memahami MANA baris yang boleh dipecah (agregat, bukan identitas) adalah inti dari keputusan desain ini.
+
+### Bukti
+`TestHTTP_FeeSharding` (fee tersebar ke >1 shard, dibuktikan bukan diasumsikan) PASS ×3 dengan `-race`; seluruh 28 test integration PASS; T-04/T-07/T-08-09 PASS ×3 tanpa regresi; migration diuji rollback+reapply di database dev sungguhan (bukan hanya testcontainers). `docs/evidence/k6-sharded.md`.
+
+---
+
 ## Status akhir sesi (2026-09-16)
 
-Sesi 1–32 selesai: Fase 1 penuh (termasuk Fase 1.1), tiga gerbang review (G-1 inline, G-2, G-3), audit keamanan menyeluruh, dan tiga perbaikan susulan dari audit (integrity error terpisah, rate limit refresh/topup/withdraw, refresh-token reuse detection). Item yang SENGAJA belum dikerjakan: sharding akun fee (butuh Linux native untuk pengukuran ulang SLO) dan seluruh Fase 2 (di luar cakupan Fase 1 secara sengaja, docs/01 §1.3) — keduanya tercatat jelas di README, bukan terlupa. Ringkasan bukti ada di README §Hasil Pengujian, §Bug yang saya temukan sendiri lewat test, dan §Audit Keamanan Penuh. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.
+Sesi 1–33 selesai: Fase 1 SELESAI TOTAL — termasuk Fase 1.1, tiga gerbang review, audit keamanan menyeluruh, dan perbaikan performa (sharding akun fee, ×3,1 throughput). Tidak ada item dalam cakupan Fase 1 yang tersisa. Yang SENGAJA di luar cakupan: seluruh Fase 2 (docs/01 §1.3) dan pengukuran Linux native (selisih p95 10 ms, bukan blocker). Ringkasan bukti ada di README §Hasil Pengujian, §Load test, §Bug yang saya temukan sendiri lewat test, dan §Audit Keamanan Penuh. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.

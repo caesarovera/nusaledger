@@ -98,16 +98,20 @@ Arah dependensi: `transport → service → domain`, `repository → domain`. Do
 | Lint / vuln | `golangci-lint` 0 issue, `govulncheck` bersih | `make lint` |
 | Image | **18,6 MB** distroless nonroot; `docker compose up` → ready 4 s | `docs/evidence/smoke-compose.md` |
 
-### Load test (k6, 100 VU, 3 menit) — jujur: SLO latensi belum tercapai
+### Load test (k6, 100 VU, 3 menit) — SLO tercapai setelah sharding akun fee
 
-| Metrik | Target | Hasil |
-|---|---|---|
-| Ketepatan saldo setelah 33.340 transfer | 100 % | ✅ trial balance 0, drift 0, fee = 33.340 × Rp 1.000 |
-| Error rate | < 1 % | ✅ 0,00 % |
-| Throughput | ≥ 200/s | ❌ **177/s** |
-| p95 / p99 | < 200 / < 500 ms | ❌ **515 / 568 ms** |
+| Metrik | Target | Sebelum (1 akun fee) | **Setelah (8 shard fee)** |
+|---|---|---|---|
+| Ketepatan saldo | 100 % | ✅ trial balance 0, drift 0 | ✅ trial balance 0, drift 0, fee tersebar rata ke 8 shard (selisih <2%) |
+| Error rate | < 1 % | ✅ 0,00 % | ✅ 0,00 % |
+| Throughput | ≥ 200/s | ❌ 177/s | ✅ **546/s** (×3,1) |
+| p95 | < 200 ms | ❌ 515 ms | 🟡 **210 ms** (hampir tercapai) |
+| p99 | < 500 ms | ❌ 568 ms | ✅ **288 ms** |
+| Transfer selesai (3 menit) | — | 33.340 | **104.333** |
 
-Penyebab utama yang teridentifikasi: **setiap transfer mengunci akun `SYSTEM_FEE_REVENUE` yang sama**, sehingga seluruh sistem terserialisasi pada satu baris panas; ditambah Postgres di Docker Desktop (Windows) dengan klien, API, dan DB berbagi satu laptop. Detail dan rencana perbaikan: `docs/evidence/k6.md`. Ini dicatat apa adanya karena *sistem yang cepat tetapi salah lebih buruk daripada yang lambat tetapi benar* — dan yang benar sudah terbukti.
+**Penyebab yang teridentifikasi (Sesi 29) dan diperbaiki (Sesi 33, migration `000009_fee_shards`):** setiap transfer mengunci akun `SYSTEM_FEE_REVENUE` yang **sama**, membuat seluruh sistem terserialisasi pada satu baris panas. Perbaikan: fee dipecah ke 8 akun ("shard"), dipilih **acak** per transfer (`pickFeeShard()` di `internal/service/ledger.go`); trial balance & job drift tidak berubah karena keduanya menjumlahkan seluruh entries/accounts, agnostik jumlah shard. Dibuktikan `TestHTTP_FeeSharding` (fee benar-benar tersebar, bukan diam-diam tetap satu akun) dan diverifikasi ulang T-04/T-07/T-08/T-09 (`-race`, ×3) tanpa regresi.
+
+⚠️ Perbandingan di atas dijalankan pada **lingkungan yang sama** (Docker Desktop Windows, satu laptop untuk klien dan server) — bukan Linux native seperti semula direncanakan, karena pengembangan tetap di Windows. Perbandingan relatif (sebelum vs setelah, lingkungan identik) tetap valid untuk mengisolasi efek perubahan ini; angka absolut belum tentu sama persis di Linux produksi. p95 210 ms sedikit di atas target 200 ms — kemungkinan sisa kontensi ada di commit WAL Postgres pada Docker Desktop, bukan lagi akun fee. Detail lengkap dan analisis: `docs/evidence/k6-sharded.md` (baseline lama: `docs/evidence/k6.md`).
 
 ## Bug yang saya temukan sendiri lewat test
 
@@ -137,9 +141,10 @@ Medium yang ditutup selain bug #6: JWT secret kini minimal 32 byte **tanpa syara
 
 ## Yang akan diperbaiki berikutnya
 
-- **Baris panas fee** → sharding sub-akun fee atau akumulasi per periode, lalu ukur ulang SLO di Linux native. Belum dikerjakan: butuh pengukuran ulang di luar Docker Desktop Windows.
+- ~~Baris panas fee~~ **selesai** (Sesi 33) — lihat §Load test di atas. p95 masih 10 ms di atas target; kandidat penyebab sisa: fsync WAL Postgres di Docker Desktop, bukan lagi akun fee.
 - **Fase 2** (di luar cakupan Fase 1 secara sengaja, docs/01 §1.3): outbox relay → RabbitMQ (tabel `outbox_events` sudah ditulis sejak Fase 1), worker `cmd/worker`, rate limit Redis, role DB aplikasi tanpa hak `UPDATE/DELETE/TRUNCATE` pada `entries`, batasi `/metrics` di reverse proxy.
 - Migrasi produksi sebagai langkah deploy terpisah (`RUN_MIGRATIONS=false`), secret dari secret manager.
+- Pengukuran ulang di Linux native (bukan Docker Desktop Windows) untuk menutup selisih p95 10 ms yang tersisa.
 
 ## Dokumen
 

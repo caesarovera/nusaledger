@@ -296,6 +296,59 @@ func TestHTTP_MoneyRateLimit(t *testing.T) {
 	expect(t, s.do("POST", "/api/v1/transactions/topup", body, withKey(tokA, uuid.NewString())), 429, "RATE_LIMITED")
 }
 
+// Perbaikan performa (k6 Sesi 29, migration 000009): setiap transfer SEBELUMNYA mengunci
+// SYSTEM_FEE_REVENUE yang sama, membuat seluruh sistem terserialisasi pada satu baris.
+// Test ini membuktikan pickFeeShard() benar-benar menyebarkan fee ke BANYAK akun (bukan
+// selalu satu), sekaligus trial balance & total fee tetap benar apa pun distribusinya.
+func TestHTTP_FeeSharding(t *testing.T) {
+	const transfers = 40
+	s := newAPIServer(t, serverOpts{transferLimit: transfers + 1, moneyLimit: 2})
+	tokA, walletA := s.registerAndLogin("andi@test.local")
+	_, walletB := s.registerAndLogin("budi@test.local")
+	_ = walletA
+
+	// saldo cukup untuk `transfers` kali kirim Rp 10.000 + fee Rp 1.000
+	s.do("POST", "/api/v1/transactions/topup", map[string]any{"amount_sen": int64(transfers) * 1_100_000}, withKey(tokA, uuid.NewString()))
+
+	for i := 0; i < transfers; i++ {
+		r := s.do("POST", "/api/v1/transactions/transfer",
+			map[string]any{"to_account_public_id": walletB, "amount_sen": 1_000_000},
+			withKey(tokA, uuid.NewString()))
+		expect(t, r, 201, "")
+	}
+
+	rows, err := testPool.Query(testCtx(t), `SELECT id, balance FROM accounts WHERE account_type = 'SYSTEM_FEE_REVENUE' AND balance > 0`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	shardsTerpakai := 0
+	var sumTerbaca int64
+	for rows.Next() {
+		var id, bal int64
+		if err := rows.Scan(&id, &bal); err != nil {
+			t.Fatal(err)
+		}
+		shardsTerpakai++
+		sumTerbaca += bal
+	}
+	t.Logf("%d dari %d transfer; %d shard fee terpakai (dari 8)", transfers, transfers, shardsTerpakai)
+
+	// Probabilitas SEMUA 40 transfer jatuh ke satu shard yang sama (1/8)^39 —
+	// praktis mustahil kalau pickFeeShard() benar-benar acak dan bekerja.
+	if shardsTerpakai < 2 {
+		t.Fatalf("fee harus tersebar ke LEBIH DARI satu shard, dapat %d shard terpakai", shardsTerpakai)
+	}
+	wantFee := int64(transfers) * 100_000
+	if sumTerbaca != wantFee {
+		t.Fatalf("total fee lintas shard: mau %d, dapat %d", wantFee, sumTerbaca)
+	}
+	if got := feeTotalBalance(t); got != domain.Money(wantFee) {
+		t.Fatalf("feeTotalBalance: mau %d, dapat %s", wantFee, got)
+	}
+	assertAllInvariants(t) // trial balance & drift TIDAK peduli berapa banyak shard
+}
+
 func TestHTTP_UangIdempotencyDanTransfer(t *testing.T) {
 	s := newAPIServer(t, serverOpts{})
 	tokA, walletA := s.registerAndLogin("andi@test.local")

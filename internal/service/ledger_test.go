@@ -58,6 +58,17 @@ func (s *stubAccounts) SystemAccount(_ context.Context, t domain.AccountType) (*
 	}
 	return nil, domain.ErrAccountNotFound
 }
+
+// SystemAccounts (jamak): stub sengaja HANYA punya satu akun fee (id 2), supaya
+// pickFeeShard() deterministik untuk unit test yang menegaskan akun fee id tertentu
+// (mis. TestTransfer_JalurBahagia). Sharding sungguhan diuji lewat integration test.
+func (s *stubAccounts) SystemAccounts(ctx context.Context, t domain.AccountType) ([]*domain.Account, error) {
+	a, err := s.SystemAccount(ctx, t)
+	if err != nil {
+		return nil, err
+	}
+	return []*domain.Account{a}, nil
+}
 func (s *stubAccounts) ListEntries(_ context.Context, _ int64, before *int64, limit int) ([]domain.PostedEntry, error) {
 	out := make([]domain.PostedEntry, 0, limit+1)
 	for _, e := range s.entries {

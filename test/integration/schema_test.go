@@ -14,8 +14,9 @@ import (
 
 func TestSchema_SeedAkunSistem(t *testing.T) {
 	resetDB(t)
-	if got := countRows(t, "accounts"); got != 3 {
-		t.Fatalf("akun sistem: mau 3, dapat %d", got)
+	// 1 CASH + 8 shard FEE (migration 000009) + 1 SUSPENSE.
+	if got := countRows(t, "accounts"); got != 10 {
+		t.Fatalf("akun sistem: mau 10, dapat %d", got)
 	}
 	assertAllInvariants(t)
 }

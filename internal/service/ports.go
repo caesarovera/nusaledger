@@ -27,6 +27,10 @@ type AccountStore interface {
 	GetByPublicID(ctx context.Context, publicID uuid.UUID) (*domain.Account, error)
 	GetWalletByUserID(ctx context.Context, userID int64) (*domain.Account, error)
 	SystemAccount(ctx context.Context, typ domain.AccountType) (*domain.Account, error)
+	// SystemAccounts mengembalikan SEMUA akun sistem berjenis typ (jamak): dipakai untuk
+	// SYSTEM_FEE_REVENUE yang di-shard (perbaikan performa, docs/06 — sengaja bisa lebih
+	// dari satu baris). Untuk SYSTEM_CASH/SYSTEM_SUSPENSE tetap tepat satu, pakai SystemAccount.
+	SystemAccounts(ctx context.Context, typ domain.AccountType) ([]*domain.Account, error)
 	ListEntries(ctx context.Context, accountID int64, beforeID *int64, limit int) ([]domain.PostedEntry, error)
 }
 

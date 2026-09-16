@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 
 	"github.com/google/uuid"
 
@@ -24,9 +25,15 @@ type Ledger struct {
 	idem     IdempotencyStore
 	cfg      LedgerConfig
 
-	// id akun sistem dimuat sekali saat startup; partial unique index menjamin tepat satu per jenis.
-	cashID int64
-	feeID  int64
+	// id akun sistem dimuat sekali saat startup.
+	cashID int64 // partial unique index menjamin tepat satu
+
+	// feeIDs adalah SHARD pendapatan fee (perbaikan performa, migration 000009): setiap
+	// transfer mengunci SATU shard yang dipilih ACAK, bukan selalu baris yang sama —
+	// tanpa ini, k6 mengukur seluruh sistem terserialisasi pada satu baris (177 tps,
+	// p95 515 ms; docs/evidence/k6.md). Trial balance & job drift tetap benar karena
+	// keduanya menjumlahkan SELURUH entries/accounts, agnostik jumlah shard.
+	feeIDs []int64
 }
 
 // NewLedger memuat akun sistem. Gagal di sini = aplikasi menolak start.
@@ -38,11 +45,27 @@ func NewLedger(ctx context.Context, store LedgerStore, accounts AccountStore, id
 	if err != nil {
 		return nil, fmt.Errorf("memuat akun SYSTEM_CASH: %w", err)
 	}
-	fee, err := accounts.SystemAccount(ctx, domain.AccountSystemFeeRevenue)
+	fees, err := accounts.SystemAccounts(ctx, domain.AccountSystemFeeRevenue)
 	if err != nil {
 		return nil, fmt.Errorf("memuat akun SYSTEM_FEE_REVENUE: %w", err)
 	}
-	return &Ledger{store: store, accounts: accounts, idem: idem, cfg: cfg, cashID: cash.ID, feeID: fee.ID}, nil
+	if len(fees) == 0 {
+		return nil, errors.New("tidak ada akun SYSTEM_FEE_REVENUE — migration belum lengkap")
+	}
+	feeIDs := make([]int64, len(fees))
+	for i, f := range fees {
+		feeIDs[i] = f.ID
+	}
+	return &Ledger{store: store, accounts: accounts, idem: idem, cfg: cfg, cashID: cash.ID, feeIDs: feeIDs}, nil
+}
+
+// pickFeeShard memilih satu akun fee acak untuk satu transfer, supaya kontensi
+// FOR UPDATE tersebar ke banyak baris, bukan menumpuk di satu baris yang sama.
+func (s *Ledger) pickFeeShard() int64 {
+	if len(s.feeIDs) == 1 {
+		return s.feeIDs[0]
+	}
+	return s.feeIDs[rand.IntN(len(s.feeIDs))] //nolint:gosec // pemilihan shard, bukan kriptografi
 }
 
 // MoneyRequest adalah input bersama semua operasi uang (BR-07: idempotency wajib).
@@ -123,7 +146,7 @@ func (s *Ledger) Transfer(ctx context.Context, req TransferRequest) (*domain.Pos
 		if to.Type != domain.AccountUserWallet {
 			return nil, domain.ErrAccountNotFound // akun sistem bukan tujuan transfer yang sah
 		}
-		return domain.NewTransfer(from.ID, to.ID, s.feeID, amount, s.cfg.TransferFee, req.Actor.UserID, req.Description)
+		return domain.NewTransfer(from.ID, to.ID, s.pickFeeShard(), amount, s.cfg.TransferFee, req.Actor.UserID, req.Description)
 	})
 	// Kenapa pemanggil (pengirim) yang jadi ViewerAccountID, bukan penerima: pengirim
 	// yang menerima respons ini. Saldo Budi (penerima) dan akun fee tidak boleh terlihat

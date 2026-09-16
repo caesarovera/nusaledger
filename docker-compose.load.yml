@@ -8,3 +8,6 @@ services:
     environment:
       LOGIN_RATE_LIMIT: "100000"
       TRANSFER_RATE_LIMIT: "100000"
+      REGISTER_RATE_LIMIT: "100000" # k6 setup() mendaftar puluhan user sekaligus (Fase 1.1)
+      REFRESH_RATE_LIMIT: "100000"
+      MONEY_RATE_LIMIT: "100000"    # topup seed di setup() juga per-actor (Fase 1.1)

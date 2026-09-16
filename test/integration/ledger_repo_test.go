@@ -349,7 +349,8 @@ func TestUserRepo_CreateWithWalletDanRefreshToken(t *testing.T) {
 	if _, _, err := users.CreateWithWallet(ctx, &domain.User{Email: "ANDI@test.local", PasswordHash: "h", FullName: "Andi 2", Role: domain.RoleUser}); !errors.Is(err, domain.ErrEmailTaken) {
 		t.Fatalf("email beda huruf besar: mau ErrEmailTaken, dapat %v", err)
 	}
-	if countRows(t, "users") != 1 || countRows(t, "accounts") != 4 {
+	// 10 akun sistem (resetDB, migration 000009) + 1 dompet Andi = 11.
+	if countRows(t, "users") != 1 || countRows(t, "accounts") != 11 {
 		t.Fatalf("pendaftaran gagal harus rollback total: users=%d accounts=%d", countRows(t, "users"), countRows(t, "accounts"))
 	}
 	if got, err := users.GetByEmail(ctx, "Andi@TEST.local"); err != nil || got.ID != u.ID {
