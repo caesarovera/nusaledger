@@ -96,7 +96,7 @@ Arah dependensi: `transport → service → domain`, `repository → domain`. Do
 | Trigger & constraint (psql, tanpa Go) | 14 skenario HARUS GAGAL semua gagal | `docs/evidence/trigger-test.md` |
 | Cursor pagination @200.000 entries | `Index Scan` 0,49 ms | `docs/evidence/explain-cursor.md` |
 | Lint / vuln | `golangci-lint` 0 issue, `govulncheck` bersih | `make lint` |
-| Image | **18,6 MB** distroless nonroot; `docker compose up` → ready 4 s | `docs/evidence/smoke-compose.md` |
+| Image | `api` **~25 MB**, `worker` **~13,5 MB**, distroless nonroot; `docker compose up` → ready 4 s. `api` naik dari 18,6 MB (Fase 1) sejak menambah klien go-redis (rate limiter opsional, Sesi 40) — ambang CI dinaikkan ke 30 MB, bukan diam-diam dilonggarkan tanpa alasan | `docs/evidence/smoke-compose.md` |
 
 ### Load test (k6, 100 VU, 3 menit) — SLO tercapai setelah sharding akun fee
 

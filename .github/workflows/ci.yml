@@ -74,11 +74,15 @@ jobs:
           build-args: VERSION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: image < 20 MB
+      - name: image < 30 MB
         run: |
+          # Ambang 20 MB (Fase 1) dinaikkan ke 30 MB sejak Fase 2: klien go-redis
+          # (rate limiter opsional, docs/JURNAL-BELAJAR.md Sesi 40) menambah ~6 MB
+          # nyata ke binary cmd/api. 30 MB masih memberi headroom sekitar 15% di
+          # atas ukuran real (~25 MB) sebelum gate ini gagal lagi.
           size=$(docker image inspect nusaledger:${{ github.sha }} --format '{{.Size}}')
           echo "ukuran: $((size/1024/1024)) MB"
-          test "$size" -lt $((20*1024*1024))
+          test "$size" -lt $((30*1024*1024))
       - name: build image worker (Fase 2)
         uses: docker/build-push-action@v6
         with:

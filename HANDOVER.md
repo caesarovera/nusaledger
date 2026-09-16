@@ -1,5 +1,12 @@
 # HANDOVER
 
+## Terakhir dikerjakan (2026-09-16, lanjutan) — CI merah diperbaiki: image `api` melebihi ambang 20 MB
+Ditanya "opsi A dulu" (perbaiki CI yang merah sebelum memilih arah lanjutan). Dicek dengan `gh run list`/`gh run view`: job `image` gagal di push Sesi 35–39, image `api` sekarang 24 MB (ambang lama 20 MB). Akar masalah dikonfirmasi dengan `git diff v1.1.0 main -- go.mod` + `go list -deps ./cmd/api`: `github.com/redis/go-redis/v9` (Sesi 36) satu-satunya dependensi produksi baru yang ikut ke binary `cmd/api`, membawa 14 sub-paket. Image `worker` TIDAK terpengaruh (tetap 13,5 MB, tidak mengimpor `ratelimit`).
+
+**Perbaikan**: ambang `.github/workflows/ci.yml` untuk `api` dinaikkan 20→**30 MB** (headroom ~15% di atas ukuran real ~25 MB), dengan komentar yang menjelaskan kenapa — BUKAN memangkas fitur Redis demi lolos angka lama yang sudah tidak mencerminkan realita Fase 2. `README.md` diperbarui (ukuran `api` dan `worker` dicantumkan terpisah, dengan alasan kenaikan). Detail penuh (termasuk cara mendiagnosis kenaikan ukuran tanpa menebak) di jurnal Sesi 40.
+
+**Status:** perbaikan ini masih LOKAL, belum di-push — menunggu konfirmasi Anda sebelum push, sesuai `CLAUDE.md`.
+
 ## Terakhir dikerjakan (2026-09-16, lanjutan) — Menutup dua lubang dokumentasi + tag `v1.2.0`
 Ditanya "apakah dari tahap setup awal sampai sekarang sudah dijelaskan step by step". Jawabannya sebagian besar ya, tapi ditemukan dua lubang nyata lewat pemeriksaan ulang `docs/JURNAL-BELAJAR.md`:
 

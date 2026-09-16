@@ -1128,9 +1128,40 @@ Diperiksa ulang atas SELURUH 17 commit di repo ini (dari `chore: bootstrap repo`
 
 ---
 
+## Sesi 40 — CI merah setelah push Sesi 35–39: image `api` melebihi ambang 20 MB
+
+### Apa
+Setelah push Sesi 35–39, `gh run list` menunjukkan job `ci` **gagal** (bukan lulus seperti semua push sebelumnya). `gh run view <id>` menunjukkan tiga job (`lint`, `unit`, `integration`) lulus, tapi job `image` gagal tepat di langkah `image < 20 MB`. Log lengkapnya (`gh run view <id> --log-failed`) menunjukkan ukuran sebenarnya: **24 MB** — build lokal (`docker image inspect`) mengonfirmasi angka yang sama (26.163.724 byte ≈ 24,9 MB). Diagnosis akar masalah: `git diff v1.1.0 main -- go.mod` menunjukkan `github.com/redis/go-redis/v9` (ditambah Sesi 36) adalah satu-satunya dependensi PRODUKSI baru yang ikut ke binary `cmd/api` — dikonfirmasi dengan `go list -deps ./cmd/api | grep redis`, menunjukkan 14 sub-paket go-redis ikut terkompilasi (termasuk hook OpenTelemetry & maintenance-notifications bawaan pustaka itu). Image `worker` TIDAK terpengaruh (tetap 13,5 MB) karena `cmd/worker` tidak mengimpor `ratelimit` sama sekali.
+
+### Kenapa ambang batasnya DINAIKKAN, bukan image-nya "dipaksa" mengecil
+Godaan pertama saat melihat gate CI gagal adalah mencari cara memperkecil image supaya lolos ambang LAMA. Tapi ambang 20 MB itu sendiri BUKAN target yang punya alasan bisnis (docs/03 tidak menyebut batas byte spesifik) — ia hanya angka yang mencerminkan REALITA Fase 1 saat ditulis (image waktu itu 18,6 MB, ditambah sedikit headroom). go-redis bukan pemborosan; ia adalah biaya NYATA dari fitur yang sengaja dipilih (Sesi 36) demi manfaat nyata (rate limit konsisten lintas instance). Memangkas fitur atau mengganti ke klien Redis yang lebih ringan HANYA demi lolos angka sembarang adalah **mengoptimalkan metrik, bukan tujuan sebenarnya** (tujuan sebenarnya: image tetap kecil DAN wajar, bukan di bawah angka tertentu apa pun alasannya). Keputusan yang benar: ambang itu sendiri yang direvisi supaya kembali mencerminkan realita — dinaikkan ke **30 MB** (headroom ~15% di atas ukuran real ~25 MB), DITULIS SEBAGAI KOMENTAR di `ci.yml` supaya siapa pun yang membacanya tahu kenapa angkanya segini, bukan angka yang "kebetulan lolos".
+
+**Kapan sebaliknya ambang TIDAK boleh dinaikkan begitu saja**: kalau kenaikan ukurannya datang dari sesuatu yang TIDAK disengaja (mis. lupa `-trimpath`, salah tahap build multi-stage sehingga ikut membawa toolchain Go penuh, atau dependensi yang menempel tanpa disadari) — itu bug yang harus diperbaiki, bukan ambang yang harus dinaikkan. Bedanya diperiksa dengan pertanyaan: "apakah kenaikan ini adalah KONSEKUENSI LANGSUNG dari keputusan desain yang sudah dibuat sadar (di sini: Sesi 36), atau muncul dari sesuatu yang tidak ada yang memutuskan?" Di sini jawabannya jelas yang pertama.
+
+### Contoh — cara mendiagnosis "kenapa image membesar" tanpa menebak
+```bash
+gh run list --limit 5                          # lihat run mana yang gagal
+gh run view <run-id> --log-failed               # log HANYA step yang gagal — langsung ke angka MB
+git diff <tag-lama> main -- go.mod              # dependensi APA yang baru ditambah sejak image terakhir lulus
+go list -deps ./cmd/api | grep <nama-dependensi> # buktikan dependensi itu BENAR ikut ke binary INI, bukan dugaan
+```
+Urutan ini penting: `git diff go.mod` saja tidak cukup, karena tidak semua dependensi baru di `go.mod` ikut ke SETIAP binary (contoh nyata: `amqp091-go` ada di `go.mod` sejak Sesi 34, tapi tidak ikut ke `cmd/api` — hanya `cmd/worker`). `go list -deps` membuktikan keterkaitan yang SEBENARNYA, bukan asumsi dari nama package yang terdengar relevan.
+
+### Bukti
+```
+gh run view 35058387652 --log-failed
+  → ukuran: 24 MB   (gagal, ambang lama 20 MB)
+docker image inspect nusaledger-api → 26163724 byte (≈ 24,9 MB, lokal — konsisten dengan CI)
+docker image inspect nusaledger-worker → 13539852 byte (≈ 12,9 MB, TIDAK berubah)
+go list -deps ./cmd/api | grep redis → 14 baris (go-redis + sub-paketnya)
+```
+`.github/workflows/ci.yml` diubah ke ambang 30 MB dengan komentar yang menjelaskan angkanya; `README.md` diperbarui mencantumkan dua ukuran terpisah (`api` ~25 MB, `worker` ~13,5 MB) dan alasan kenaikannya, bukan diam-diam menghapus angka lama.
+
+---
+
 ## Status akhir sesi (2026-09-16)
 
-Sesi 1–39 selesai. **Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SELESAI TOTAL**: outbox relay (Sesi 34), role DB terbatas untuk `entries` (Sesi 35), rate limit Redis opsional (Sesi 36), pembatasan jaringan `/metrics` (Sesi 37) — tidak ada item Fase 2 yang tersisa. Sesi 38–39 menutup dua lubang dokumentasi yang ditemukan lewat pemeriksaan ulang (setup GitHub/push/CI, dan identitas git) — keduanya SUDAH dilakukan sejak awal proyek, hanya belum dijelaskan format belajarnya sampai sekarang. Satu-satunya keterbatasan yang masih terbuka di seluruh proyek: p95 10 ms di atas target dari pengukuran k6 di Docker Desktop Windows (Sesi 33), dicatat sadar sebagai keterbatasan lingkungan, bukan bug.
+Sesi 1–40 selesai. **Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SELESAI TOTAL**: outbox relay (Sesi 34), role DB terbatas untuk `entries` (Sesi 35), rate limit Redis opsional (Sesi 36), pembatasan jaringan `/metrics` (Sesi 37) — tidak ada item Fase 2 yang tersisa. Sesi 38–39 menutup dua lubang dokumentasi yang ditemukan lewat pemeriksaan ulang (setup GitHub/push/CI, dan identitas git). Sesi 40 menutup CI yang sempat merah setelah push Sesi 35–39 (ambang ukuran image, bukan bug). Satu-satunya keterbatasan yang masih terbuka di seluruh proyek: p95 10 ms di atas target dari pengukuran k6 di Docker Desktop Windows (Sesi 33), dicatat sadar sebagai keterbatasan lingkungan, bukan bug.
 
 **Catatan tentang penomoran sesi**: nomor 10, 15–17, 21, dan 25 (dari tabel 30-sesi rencana awal, `docs/06-PLAN-EKSEKUSI-AI.md`) tidak muncul sebagai judul tersendiri di jurnal ini — isinya ADA, tapi digabung ke entri sesi lain karena pekerjaannya kecil/terkait langsung (mis. review G-1/Sesi 10 disebut inline di entri Sesi 4 "Migration & skema"; reversal/Sesi 21 ada di dalam Sesi 12–13 "LedgerRepo.Post"; E2E IDOR/Sesi 25 ada di dalam Sesi 23–24 & 27). Kalau mencari topik tertentu, cari kata kuncinya (mis. "reversal", "IDOR") lewat pencarian teks, bukan nomor sesinya.
 
