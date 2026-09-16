@@ -1,5 +1,16 @@
 # HANDOVER
 
+## Terakhir dikerjakan (2026-09-16, lanjutan) — Rate limit Redis opsional (Fase 2, prioritas kedua dari 3 sisa item)
+Lanjutan langsung dari item sebelumnya (role DB). Dikerjakan `RedisLimiter` (`internal/platform/ratelimit/redis.go`) yang mengimplementasikan kontrak `allower` (`Allow(key string) bool`) yang SAMA dengan `Limiter` in-memory — jadi `router.go`/`middleware.go` tidak disentuh sama sekali.
+
+**Dikerjakan:**
+- `RedisLimiter`: fixed-window counter via skrip Lua (`INCR` + `PEXPIRE` atomik di sisi server — dua panggilan terpisah berisiko key tanpa TTL kalau proses mati di antaranya). Fail-closed saat Redis error/timeout/tidak terjangkau (docs/03 §6), timeout 500ms sendiri (tidak mewarisi context request HTTP, supaya Redis yang lambat tidak ikut memperlambat semua request).
+- `config.RedisURL` (opsional, `env:"REDIS_URL"`): kosong → tetap limiter in-memory (default, cukup 1 instance); diisi → limiter Redis. `cmd/api/main.go` mendapat `newLimiters()` sebagai satu titik keputusan backend.
+- `docker-compose.yml`: service `redis` baru (redis:7-alpine, `127.0.0.1:6380` — port 6379 host dipakai laragon), `REDIS_URL` diisi untuk `api`.
+- 3 test baru (`test/integration/ratelimit_redis_test.go`, Redis sungguhan via testcontainers): jendela tetap dengan TTL asli, hitungan terbukti dibagi lintas DUA instance `*RedisLimiter` Go yang berbeda (skenario nyata: 2 instance `cmd/api`), fail-closed saat Redis tidak terjangkau.
+- Diverifikasi lewat `docker compose up` sungguhan: 6 percobaan login → percobaan ke-6 dapat 429, dan `redis-cli KEYS "ratelimit:*"` menunjukkan key benar-benar tersimpan di Redis.
+- Build, vet, lint (0 issue), unit+integration `-race` penuh (33 test, 25 detik), `govulncheck` (0 vulnerabilitas nyata) — semua hijau.
+
 ## Terakhir dikerjakan (2026-09-16, lanjutan) — Role DB terbatas untuk `entries` (Fase 2, prioritas tertinggi dari 3 sisa item)
 Diminta "lanjutkan berdasarkan prioritas terpenting dahulu" atas 3 sisa item Fase 2 (rate limit Redis, role DB, batas jaringan `/metrics`). Dipilih role DB LEBIH DULU: kegagalan tanpa lapis ini berarti data ledger yang salah (tidak bisa di-rollback lewat restart), sedangkan dua item lain "hanya" konsistensi rate limit dan kebocoran informasi — alasan lengkap di jurnal Sesi 35.
 
@@ -65,9 +76,9 @@ Coverage: domain 99,1 %, service 84,2 %. Bukti lengkap di `docs/evidence/`. Jurn
 **G-3** (Fable, read-only, release gate): kesimpulan **YA-DENGAN-CATATAN**. Satu temuan ditindaklanjuti sebelum tag: `/auth/register` tanpa rate limit (argon2id mahal, vektor DoS ringan) → ditambah `rateLimitByIP` + `REGISTER_RATE_LIMIT` (default 10/15 menit). Temuan minor lain (limiter login per email, `/metrics` publik, penamaan `ErrInvalidReversalLink` untuk constraint accounts) diterima sebagai trade-off Fase 1, dicatat di README.
 
 ## Berikutnya
-**Fase 1 selesai total** (v1.0.3, sudah di-tag). **Fase 2 dimulai** — outbox relay + RabbitMQ + consumer, DAN role DB terbatas untuk `entries`, selesai dan terverifikasi.
-1. **Pertimbangkan tag `v1.1.0`** untuk memuat seluruh slice Fase 2 sampai titik ini (`cmd/worker`, migration `000010` & `000011`) — versi minor, bukan `v1.0.4`.
-2. Fase 2, sisa item (prioritas menurun): rate limit Redis (multi-instance API), batasi `/metrics` di reverse proxy (dokumentasi/infra, bukan kode).
+**Fase 1 selesai total** (v1.0.3, sudah di-tag). **Fase 2**: outbox relay + RabbitMQ + consumer, role DB terbatas untuk `entries`, DAN rate limit Redis opsional — semua selesai dan terverifikasi.
+1. **Pertimbangkan tag `v1.1.0`** untuk memuat seluruh slice Fase 2 sampai titik ini (`cmd/worker`, migration `000010` & `000011`, `RedisLimiter`) — versi minor, bukan `v1.0.4`.
+2. Fase 2, satu-satunya sisa item: batasi `/metrics` di reverse proxy — ini dokumentasi/infra (contoh konfigurasi nginx/Caddy), bukan kode, karena pembatasan jaringan bukan tanggung jawab aplikasi.
 3. Pengukuran ulang di Linux native untuk menutup selisih p95 10 ms yang tersisa dari Sesi 33 (bukan blocker).
 
 ## Keputusan yang sudah diambil

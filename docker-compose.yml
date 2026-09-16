@@ -17,6 +17,10 @@ services:
       JWT_SECRET: dev-only-secret-ganti-di-produksi-minimal-32-byte
       RUN_MIGRATIONS: "true"
       DRIFT_CHECK_INTERVAL: 30s
+      # REDIS_URL diisi → rate limiter Redis (konsisten lintas instance); di compose ini
+      # hanya SATU instance api, jadi manfaatnya baru terasa saat di-scale (`--scale api=N`)
+      # — tapi diisi dari sekarang supaya jalur produksi diuji, bukan hanya jalur dev "aman".
+      REDIS_URL: redis://redis:6379/0
     ports:
       # Host 8081 → container 8080. Port 8080 di mesin dev sudah dipakai layanan lain (laragon).
       # Terikat 127.0.0.1 saja (temuan audit F-2): tanpa ini, port terbuka ke seluruh
@@ -25,6 +29,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy   # tunggu pg_isready, bukan sleep
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
   worker:
@@ -47,6 +53,19 @@ services:
       rabbitmq:
         condition: service_healthy
     restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: nusaledger-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"] # rate limit boleh hilang saat restart, bukan data yang harus tahan
+    ports:
+      # Dev-only, tanpa password (F-2: diikat 127.0.0.1, bukan LAN/Wi-Fi).
+      - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   rabbitmq:
     image: rabbitmq:4-management-alpine

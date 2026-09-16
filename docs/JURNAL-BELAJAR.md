@@ -955,6 +955,56 @@ pool, _ := pgxpool.New(ctx, dsn)   // koneksi BARU, peran BERBEDA, database SAMA
 
 ---
 
+## Sesi 36 — Rate limit Redis: konsisten lintas banyak instance `cmd/api` (2026-09-16)
+
+### Apa
+Prioritas kedua dari daftar "lanjutkan berdasarkan prioritas terpenting dahulu" (setelah role DB Sesi 35). `RedisLimiter` baru (`internal/platform/ratelimit/redis.go`) mengimplementasikan kontrak `Allow(key string) bool` yang SAMA dengan `Limiter` in-memory (`memory.go`) yang sudah ada sejak Fase 1 — jadi `router.go`/`middleware.go` (kontrak `allower`) TIDAK PERLU disentuh sama sekali, hanya `cmd/api/main.go` yang memilih backend mana yang dipasang. `REDIS_URL` kosong (default) → tetap in-memory; diisi → Redis. Service `redis` baru ditambahkan ke `docker-compose.yml` dan diisi otomatis untuk `api`.
+
+### Kenapa switch di `main.go`, bukan menghapus `Limiter` in-memory
+Komentar di `memory.go` sejak Fase 1 sudah menulis niatnya: *"Fase 2 mengganti implementasi ini dengan Redis di balik interface yang sama."* Tapi "mengganti" di sini berarti mengganti KAPAN DIBUTUHKAN, bukan selalu — `docker-compose.yml` di repo ini hanya menjalankan SATU instance `api`, jadi Redis belum benar-benar diperlukan untuk kebenaran, hanya untuk KESIAPAN diskalakan. Memaksa Redis WAJIB ada untuk `go run ./cmd/api` biasa (tanpa Docker) akan menambah beban setup tanpa manfaat nyata di titik ini — pola yang sama dengan alasan fee TIDAK di-shard 64× (Sesi 33) dan relay+consumer TIDAK dipisah jadi dua binary (Sesi 34): jangan menambah dependensi wajib sebelum ada bukti kebutuhan.
+
+### Kenapa INCR+PEXPIRE harus satu skrip Lua, bukan dua panggilan Redis
+```go
+const incrScript = `
+local n = redis.call("INCR", KEYS[1])
+if n == 1 then
+	redis.call("PEXPIRE", KEYS[1], ARGV[1])
+end
+return n
+`
+```
+Kalau ditulis sebagai dua panggilan terpisah (`client.Incr(...)` lalu `client.Expire(...)`), ADA JENDELA WAKTU di antara keduanya di mana proses Go bisa mati (panik, OOM-kill, restart pod) atau koneksi jaringan putus SETELAH INCR berhasil tapi SEBELUM PEXPIRE terkirim. Key itu lalu tidak pernah punya TTL — ia akan terus bertambah SELAMANYA dan tidak pernah "reset" jendelanya lagi, sekaligus bocor memori Redis (key yang tidak pernah dihapus). `EVAL` mengirim skrip ini untuk dijalankan ATOMIK di SISI SERVER Redis — Redis memproses satu perintah pada satu waktu (single-threaded untuk eksekusi command), jadi tidak ada proses lain yang bisa menyisip di antara `INCR` dan `PEXPIRE` skrip yang sama.
+
+### Kenapa timeout-nya sendiri (500ms), bukan mewarisi context request HTTP
+```go
+ctx, cancel := context.WithTimeout(context.Background(), l.timeout)  // BUKAN r.Context()
+```
+Kalau memakai context request HTTP (yang bisa berumur detik, tergantung `ReadTimeout`/`WriteTimeout` server), satu Redis yang lambat (bukan mati total, hanya lambat) akan membuat SETIAP request yang lewat rate limiter ikut menunggu selama itu — rate limiter yang seharusnya melindungi malah jadi sumber lambat. Timeout pendek milik limiter sendiri membatasi berapa lama satu pemeriksaan rate limit boleh menunda satu request, terlepas dari berapa lama request itu sendiri "boleh" hidup.
+
+### Kenapa gagal (timeout/tidak terjangkau) berarti TOLAK, bukan LOLOSKAN
+```go
+n, err := l.client.Eval(ctx, incrScript, ...).Int64()
+if err != nil {
+	return false   // fail-closed — BUKAN "return true karena tidak tahu"
+}
+```
+docs/03 §6 sudah menetapkan kebijakan ini sejak Fase 1 untuk limiter in-memory ("lebih baik menolak daripada membuka pintu") — RedisLimiter WAJIB mengikuti kebijakan yang SAMA, karena kebalikannya (fail-open) berarti satu Redis yang mati membuat SEMUA rate limit di seluruh sistem hilang serentak, persis saat sistem paling rentan (Redis down sering menyertai insiden yang lebih besar, bukan kejadian terisolasi).
+
+### Contoh — membuktikan hitungan benar-benar dibagi (bukan per-proses)
+```go
+instanceA := ratelimit.NewRedis(client, 2, time.Minute)
+instanceB := ratelimit.NewRedis(client, 2, time.Minute)   // client SAMA, instance Go BEDA
+instanceA.Allow("citra")   // 1/2
+instanceB.Allow("citra")   // 2/2 — instance B MELIHAT hitungan instance A
+instanceA.Allow("citra")   // ditolak — kuota sudah habis, walau dari sudut pandang instance A ini baru percobaan ke-2
+```
+Ini skenario yang TIDAK BISA dibuktikan dengan `Limiter` in-memory: dua `*Limiter` in-memory yang berbeda punya `map[string]*bucket` masing-masing, tidak akan pernah saling melihat. Test `TestRedisLimiter_DibagiLintasInstance` menjalankan persis pola ini untuk membuktikan manfaat inti fitur ini — bukan sekadar "limiter yang lain".
+
+### Bukti
+Tiga test baru (`test/integration/ratelimit_redis_test.go`, Redis sungguhan via testcontainers, `-race`): jendela tetap dengan TTL asli (bukan clock palsu, karena TTL milik Redis bukan proses Go), hitungan dibagi lintas instance, fail-closed saat Redis tidak terjangkau (dibuktikan dengan connect ke `127.0.0.1:1`, port yang pasti ditolak OS). Diverifikasi ULANG lewat `docker compose up` sungguhan (bukan hanya test): 6 percobaan login beruntun → percobaan ke-6 (limit default 5) mendapat `429`, DAN `redis-cli KEYS "ratelimit:*"` di container menunjukkan key `ratelimit:ip:...` dan `ratelimit:email:...` benar-benar tersimpan di Redis, bukan di memori proses `api`. Lint 0 issue, unit+integration `-race` penuh hijau (33 test), `govulncheck` 0 vulnerabilitas nyata.
+
+---
+
 ## Status akhir sesi (2026-09-16)
 
-Sesi 1–35 selesai: Fase 1 SELESAI TOTAL (v1.0.3), Fase 2 slice pertama (outbox) + role DB terbatas untuk `entries` (lapis kedua) selesai dan teruji. Sisa Fase 2: rate limit Redis, pembatasan jaringan untuk `/metrics`. Ringkasan bukti ada di README §Fase 2, `docs/evidence/fase2-outbox.md`. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.
+Sesi 1–36 selesai: Fase 1 SELESAI TOTAL (v1.0.3). Fase 2: outbox relay (Sesi 34), role DB terbatas untuk `entries` (Sesi 35), rate limit Redis opsional (Sesi 36) — ketiganya selesai dan teruji end-to-end, bukan hanya unit test. Sisa Fase 2: pembatasan jaringan untuk `/metrics` (dokumentasi/infra, bukan kode — lihat README §Yang akan diperbaiki). Ringkasan bukti ada di README §Fase 2, `docs/evidence/fase2-outbox.md`. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.

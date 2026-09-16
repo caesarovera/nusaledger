@@ -72,7 +72,7 @@ Arah dependensi: `transport → service → domain`, `repository → domain`. Do
 | Filter kepemilikan di `WHERE` (`EXISTS entries …`) | Cek di Go setelah query | Data milik orang lain tidak pernah keluar dari database (IDOR) |
 | Builder transaksi di **domain** | Di service/handler | Worker Fase 2 memakai jalur yang sama; tidak ada cara menyusun arah entry yang salah |
 | `mapError` satu tempat di transport | Status code di tiap handler | Kesalahan pemetaan (500 padahal 422) tidak bisa tersebar |
-| Rate limit in-memory, fail-closed | Redis | Fase 1 satu instance; interface memungkinkan Redis di Fase 2 |
+| Rate limit fail-closed, backend in-memory ATAU Redis di balik interface sama (`REDIS_URL` opsional) | Selalu satu atau selalu yang lain | Fase 1 satu instance cukup in-memory; Fase 2 `REDIS_URL` diisi → hitungan konsisten lintas banyak instance `cmd/api`, tanpa mengubah `router.go` sama sekali (Sesi 36) |
 | Rate limit `/auth/register` per IP (ditambah pasca G-3) | Tanpa limiter | argon2id (64 MiB, t=3) mahal; registrasi anonim berulang bisa menghabiskan CPU/memori tanpa pembatas |
 | Tanpa `middleware.RealIP` | Percaya `X-Forwarded-For` | Header itu bisa dipalsukan siapa pun tanpa proxy tepercaya (GHSA-3fxj-6jh8-hvhx) |
 | `ViewerAccountID` pada `PostResult`: respons transaksi hanya menampilkan `balance_after` milik pemanggil sendiri | Tampilkan semua entry apa adanya | Tanpa ini, transfer/topup/withdraw membocorkan saldo pihak lain — termasuk saldo kumulatif akun sistem — ke pengguna biasa (audit keamanan penuh, temuan B-1, High) |
@@ -158,11 +158,14 @@ docker compose up -d --build   # api + worker + postgres + rabbitmq, satu perint
 
 **Role database terbatas untuk `entries`** (migration `000011`, lapis kedua BR-04 docs/02 §2.6): `cmd/api` dan `cmd/worker` connect sebagai `nusaledger_app`, peran yang HAK AKSESNYA SENDIRI (bukan hanya trigger) tidak mengizinkan UPDATE/DELETE/TRUNCATE pada `entries` atau DELETE pada `transactions` — migrasi tetap jalan sebagai superuser lewat `MIGRATION_DATABASE_URL` terpisah. Dua ancaman berbeda ditutup dua lapis berbeda: trigger `forbid_mutation` menahan bug kode, REVOKE di level role menahan siapa pun yang connect dengan kredensial aplikasi dan mengetik SQL manual. Dibuktikan `TestAppRole_TidakBisaMengubahLedger` — menyambung sungguhan sebagai `nusaledger_app` (bukan superuser test), mendapat SQLSTATE `42501` (insufficient_privilege), berbeda dari trigger (`23514`).
 
+**Rate limit Redis opsional** (`internal/platform/ratelimit/redis.go`, Sesi 36): `RedisLimiter` mengimplementasikan kontrak `Allow(key string) bool` yang sama dengan limiter in-memory Fase 1, jadi router tidak berubah — hanya `REDIS_URL` (kosong = in-memory, diisi = Redis) yang menentukan backend di `cmd/api/main.go`. Hitungan `INCR`+`PEXPIRE` dijalankan sebagai satu skrip Lua atomik (dua panggilan terpisah berisiko key tanpa TTL kalau proses mati di antaranya). Fail-closed saat Redis tidak terjangkau (docs/03 §6), timeout 500ms sendiri (bukan mewarisi context request, supaya Redis lambat tidak ikut memperlambat semua request). Dibuktikan `TestRedisLimiter_DibagiLintasInstance` — dua `*RedisLimiter` Go yang berbeda, terhubung ke Redis yang sama, berbagi satu kuota (skenario nyata 2 instance `cmd/api`) — dan lewat `docker compose up` sungguhan: percobaan login ke-6 (limit 5) mendapat 429, `redis-cli KEYS "ratelimit:*"` menunjukkan key tersimpan sungguhan di Redis.
+
 ## Yang akan diperbaiki berikutnya
 
 - ~~Baris panas fee~~ **selesai** (Sesi 33) — lihat §Load test di atas. p95 masih 10 ms di atas target; kandidat penyebab sisa: fsync WAL Postgres di Docker Desktop, bukan lagi akun fee.
 - ~~Role DB terbatas untuk `entries`~~ **selesai** (Sesi 35) — lihat §Fase 2 di atas.
-- **Fase 2, sisa item**: rate limit Redis (in-memory saat ini cukup untuk satu instance API, tapi kalau `cmd/api` diskalakan >1 instance, rate limit in-memory per-instance tidak lagi konsisten), batasi `/metrics` di reverse proxy.
+- ~~Rate limit Redis~~ **selesai** (Sesi 36) — lihat §Fase 2 di atas.
+- **Fase 2, satu-satunya sisa item**: batasi `/metrics` di reverse proxy — dokumentasi/infra (contoh konfigurasi nginx/Caddy), bukan kode; pembatasan jaringan bukan tanggung jawab aplikasi.
 - Migrasi produksi sebagai langkah deploy terpisah (`RUN_MIGRATIONS=false`), secret dari secret manager.
 - Pengukuran ulang di Linux native (bukan Docker Desktop Windows) untuk menutup selisih p95 10 ms yang tersisa.
 

@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/caesarovera/nusaledger/internal/app"
 	"github.com/caesarovera/nusaledger/internal/config"
 	"github.com/caesarovera/nusaledger/internal/domain"
@@ -63,6 +65,12 @@ func run() error {
 	}
 	defer pool.Close()
 
+	limiters, closeLimiters, err := newLimiters(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer closeLimiters()
+
 	// --- repository ---
 	ledgerRepo := postgres.NewLedgerRepo(pool)
 	accountRepo := postgres.NewAccountRepo(pool)
@@ -95,11 +103,11 @@ func run() error {
 	readiness := httptransport.NewReadiness()
 	router := httptransport.NewRouter(httptransport.Deps{
 		Logger: log, Metrics: m, JWT: jwt, Auth: authSvc, Ledger: ledgerSvc,
-		LoginLimiter:    ratelimit.New(cfg.LoginRateLimit, cfg.LoginRateWindow),
-		TransferLimiter: ratelimit.New(cfg.TransferRateLimit, cfg.TransferRateWindow),
-		RegisterLimiter: ratelimit.New(cfg.RegisterRateLimit, cfg.RegisterRateWindow),
-		RefreshLimiter:  ratelimit.New(cfg.RefreshRateLimit, cfg.RefreshRateWindow),
-		MoneyLimiter:    ratelimit.New(cfg.MoneyRateLimit, cfg.MoneyRateWindow),
+		LoginLimiter:    limiters.login,
+		TransferLimiter: limiters.transfer,
+		RegisterLimiter: limiters.register,
+		RefreshLimiter:  limiters.refresh,
+		MoneyLimiter:    limiters.money,
 		Ready:           pool.Ping,
 		Readiness:       readiness,
 		Timeout:         30 * time.Second,
@@ -142,6 +150,49 @@ func run() error {
 	}
 
 	return app.Serve(ctx, srv, ln, cfg.ShutdownWait, log, func() { readiness.Set(false) })
+}
+
+// apiLimiters mengelompokkan kelima pembatas laju supaya newLimiters punya satu titik
+// keputusan backend (Redis vs in-memory), bukan diulang lima kali di run().
+type apiLimiters struct {
+	login, transfer, register, refresh, money interface{ Allow(string) bool }
+}
+
+// newLimiters memilih backend rate limiter dari cfg.RedisURL: kosong → in-memory
+// (docs/06 F-04, cukup untuk satu instance); diisi → Redis (Fase 2, konsisten lintas
+// banyak instance cmd/api). Redis diperiksa dengan Ping SEKALI di sini, sama seperti
+// pool Postgres — gagal connect harus menghentikan startup, bukan baru terlihat saat
+// request pertama masuk.
+func newLimiters(ctx context.Context, cfg config.Config) (apiLimiters, func(), error) {
+	noop := func() {}
+	if cfg.RedisURL == "" {
+		return apiLimiters{
+			login:    ratelimit.New(cfg.LoginRateLimit, cfg.LoginRateWindow),
+			transfer: ratelimit.New(cfg.TransferRateLimit, cfg.TransferRateWindow),
+			register: ratelimit.New(cfg.RegisterRateLimit, cfg.RegisterRateWindow),
+			refresh:  ratelimit.New(cfg.RefreshRateLimit, cfg.RefreshRateWindow),
+			money:    ratelimit.New(cfg.MoneyRateLimit, cfg.MoneyRateWindow),
+		}, noop, nil
+	}
+
+	opts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		return apiLimiters{}, noop, fmt.Errorf("REDIS_URL tidak valid: %w", err)
+	}
+	client := redis.NewClient(opts)
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := client.Ping(pingCtx).Err(); err != nil {
+		_ = client.Close()
+		return apiLimiters{}, noop, fmt.Errorf("connect redis: %w", err)
+	}
+	return apiLimiters{
+		login:    ratelimit.NewRedis(client, cfg.LoginRateLimit, cfg.LoginRateWindow),
+		transfer: ratelimit.NewRedis(client, cfg.TransferRateLimit, cfg.TransferRateWindow),
+		register: ratelimit.NewRedis(client, cfg.RegisterRateLimit, cfg.RegisterRateWindow),
+		refresh:  ratelimit.NewRedis(client, cfg.RefreshRateLimit, cfg.RefreshRateWindow),
+		money:    ratelimit.NewRedis(client, cfg.MoneyRateLimit, cfg.MoneyRateWindow),
+	}, func() { _ = client.Close() }, nil
 }
 
 func servePprof(ctx context.Context, addr string, log *slog.Logger) {

@@ -43,7 +43,12 @@ type Config struct {
 	DriftCheckInterval time.Duration `env:"DRIFT_CHECK_INTERVAL" envDefault:"60s"`
 	RunMigrations      bool          `env:"RUN_MIGRATIONS" envDefault:"false"` // true di compose; produksi memakai langkah migrasi terpisah
 
-	// Rate limit (in-memory di Fase 1, lihat docs/06 F-04)
+	// RedisURL kosong (default) = rate limiter in-memory (docs/06 F-04, cukup 1 instance).
+	// Diisi = rate limiter Redis (Fase 2): konsisten lintas banyak instance cmd/api, karena
+	// hitungannya dibagi lewat Redis, bukan disimpan di memori masing-masing instance.
+	RedisURL string `env:"REDIS_URL"`
+
+	// Rate limit — sumber penyimpanan ditentukan RedisURL, bentuk limitnya sama untuk kedua backend.
 	LoginRateLimit     int           `env:"LOGIN_RATE_LIMIT" envDefault:"5"`
 	LoginRateWindow    time.Duration `env:"LOGIN_RATE_WINDOW" envDefault:"15m"`
 	TransferRateLimit  int           `env:"TRANSFER_RATE_LIMIT" envDefault:"20"`
