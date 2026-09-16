@@ -1,5 +1,15 @@
 # HANDOVER
 
+## Terakhir dikerjakan (2026-09-16, lanjutan) — Fase 1.1: tiga item susulan dari HANDOVER "Berikutnya"
+Diminta "lanjutkan tasklist yang belum sesuai plan" — dikerjakan tiga item Fase 1.1 yang tercatat di bawah (bukan item Fase 2, itu sengaja di luar cakupan per docs/01 §1.3):
+1. **Sentinel `ErrIntegrityViolation`** dipisah dari `ErrInvalidReversalLink`. `translate()` (postgres/errors.go) sekarang memetakan `chk_normal_balance`/`chk_owner` → `ErrIntegrityViolation`; `chk_reversal_link` tetap → `ErrInvalidReversalLink`.
+2. **Rate limit** `/auth/refresh` (per IP, `RefreshLimiter`/`REFRESH_RATE_LIMIT`) dan `topup`+`withdraw` (per actor, satu `MoneyLimiter`/`MONEY_RATE_LIMIT` bersama — keduanya operasi tulis satu-akun yang setara, sengaja tidak berbagi budget dengan `transfer`). Test: `TestHTTP_RefreshRateLimit`, `TestHTTP_MoneyRateLimit`.
+3. **Refresh-token reuse detection.** `RefreshTokenStore` mendapat method baru `RevokeAllForUser`. `Auth.Refresh` sekarang memeriksa `rt.RevokedAt != nil` SEBELUM cek `Usable` — kalau token yang diajukan sudah pernah dicabut (dirotasi sebelumnya) tapi dipakai lagi, itu sinyal token dicuri, dan **semua sesi user tersebut dicabut** (tanpa migrasi skema — cukup `UPDATE ... WHERE user_id=$1 AND revoked_at IS NULL`, bukan true "token family" berbasis kolom baru). Test: `TestRefresh_ReuseTerdeteksi_CabutSemuaSesi` (membuktikan sesi LAIN yang tidak terlibat pun ikut tercabut).
+
+**Item performa (sharding akun fee) SENGAJA dilewati** — perlu pengukuran ulang k6 di Linux native, tidak bisa diverifikasi bermakna di Docker Desktop Windows. Tetap tercatat di README §Yang akan diperbaiki.
+
+Semua tiga fix diverifikasi `-race` penuh (unit + integration, T-04 ×3), lint/vet bersih.
+
 ## Terakhir dikerjakan (2026-09-16, lanjutan) — Audit keamanan penuh setelah tag v1.0.0
 Repo sudah di-tag `v1.0.0` (lihat entri di bawah), lalu diminta menjalankan **audit keamanan penuh** (bukan diff, seluruh repo). Model Opus (read-only) untuk audit kode; sesi utama untuk pemeriksaan mekanis (grep secret, deep-scan git history, govulncheck verbose) — bersih total, tidak ada secret yang pernah bocor.
 
@@ -19,10 +29,10 @@ Coverage: domain 99,1 %, service 84,2 %. Bukti lengkap di `docs/evidence/`. Jurn
 **G-3** (Fable, read-only, release gate): kesimpulan **YA-DENGAN-CATATAN**. Satu temuan ditindaklanjuti sebelum tag: `/auth/register` tanpa rate limit (argon2id mahal, vektor DoS ringan) → ditambah `rateLimitByIP` + `REGISTER_RATE_LIMIT` (default 10/15 menit). Temuan minor lain (limiter login per email, `/metrics` publik, penamaan `ErrInvalidReversalLink` untuk constraint accounts) diterima sebagai trade-off Fase 1, dicatat di README.
 
 ## Berikutnya
-1. **Pertimbangkan tag `v1.0.1`** (patch keamanan) setelah commit audit ini di-push — `v1.0.0` yang sudah di-tag TIDAK memuat perbaikan bug High di atas.
-2. Fase 1.1 (tidak menghalangi rilis): pisahkan sentinel `ErrIntegrityViolation` dari `ErrInvalidReversalLink`; rate limit `/auth/refresh`/`topup`/`withdraw`; refresh-token reuse detection.
-3. Perbaikan performa (Fase 1.1/2): sharding akun fee → ukur ulang k6 di Linux native. Jangan mengubah `Post()` tanpa mengulang T-04…T-09.
-4. Fase 2: outbox relay, worker, rate limit Redis, batasi `/metrics` di jaringan.
+Fase 1 (termasuk Fase 1.1) **selesai** — semua item yang tercatat "belum" sudah ditutup atau didokumentasikan sebagai keterbatasan sadar. Sisa pekerjaan:
+1. **Pertimbangkan tag `v1.0.2`** untuk memuat tiga perbaikan Fase 1.1 di atas — `v1.0.1` tidak memuatnya.
+2. Perbaikan performa (butuh Linux native, bukan blocker): sharding akun fee → ukur ulang k6. Jangan mengubah `Post()` tanpa mengulang T-04…T-09.
+3. Fase 2 (di luar cakupan Fase 1 secara sengaja, docs/01 §1.3): outbox relay, worker, rate limit Redis, batasi `/metrics` di jaringan.
 
 ## Keputusan yang sudah diambil
 - Semua keputusan docs/06 §2 (F-01…F-06, K-01…K-09) DISETUJUI pemilik proyek pada 2026-09-16.

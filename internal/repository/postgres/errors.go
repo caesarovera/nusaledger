@@ -42,8 +42,10 @@ func translate(err error) error {
 			return domain.ErrUnbalanced
 		case "entries_amount_check":
 			return domain.ErrAmountNotPositive
-		case "chk_reversal_link", "chk_normal_balance", "chk_owner":
+		case "chk_reversal_link":
 			return domain.ErrInvalidReversalLink
+		case "chk_normal_balance", "chk_owner":
+			return domain.ErrIntegrityViolation
 		}
 	case codeUniqueViolation:
 		switch pgErr.ConstraintName {

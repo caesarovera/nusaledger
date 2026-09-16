@@ -122,6 +122,17 @@ func (a *Auth) Refresh(ctx context.Context, refreshToken string) (*TokenPair, er
 		}
 		return nil, fmt.Errorf("mencari refresh token: %w", err)
 	}
+	// Deteksi REUSE (temuan audit A-4): token ini SUDAH dicabut (dirotasi sebelumnya),
+	// tapi dipakai lagi. Rotasi normal tidak pernah memakai token yang sama dua kali,
+	// jadi ini sinyal token dicuri. Respons defensif: cabut SEMUA sesi user ini, bukan
+	// hanya menolak permintaan ini — pemilik sah harus login ulang, tapi pencuri juga
+	// kehilangan token curian yang sudah sempat dirotasi lebih dulu.
+	if rt.RevokedAt != nil {
+		if err := a.tokens.RevokeAllForUser(ctx, rt.UserID); err != nil {
+			return nil, fmt.Errorf("mencabut semua sesi setelah reuse terdeteksi: %w", err)
+		}
+		return nil, domain.ErrInvalidToken
+	}
 	if !rt.Usable(a.now()) {
 		return nil, domain.ErrInvalidToken
 	}

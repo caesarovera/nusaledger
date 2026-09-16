@@ -47,6 +47,11 @@ type RefreshTokenStore interface {
 	Store(ctx context.Context, userID int64, tokenHash string, expiresAt time.Time) error
 	Find(ctx context.Context, tokenHash string) (*domain.RefreshToken, error)
 	Revoke(ctx context.Context, tokenHash string) error
+	// RevokeAllForUser mencabut SEMUA refresh token aktif milik user (deteksi reuse,
+	// temuan audit A-4): token yang sudah dirotasi tapi dipakai lagi adalah sinyal
+	// token itu dicuri — respons defensifnya adalah mencabut seluruh sesi, bukan
+	// hanya menolak permintaan ini.
+	RevokeAllForUser(ctx context.Context, userID int64) error
 }
 
 // PasswordHasher menyembunyikan algoritma hash (argon2id) dari service.

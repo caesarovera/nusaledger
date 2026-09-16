@@ -46,6 +46,12 @@ type Config struct {
 	// Per IP. argon2id (64 MiB, t=3) mahal; tanpa ini registrasi anonim berulang menghabiskan CPU/memori (temuan G-3).
 	RegisterRateLimit  int           `env:"REGISTER_RATE_LIMIT" envDefault:"10"`
 	RegisterRateWindow time.Duration `env:"REGISTER_RATE_WINDOW" envDefault:"15m"`
+	// Per IP; tanpa auth, lookup DB tak terbatas (temuan audit G-3).
+	RefreshRateLimit  int           `env:"REFRESH_RATE_LIMIT" envDefault:"10"`
+	RefreshRateWindow time.Duration `env:"REFRESH_RATE_WINDOW" envDefault:"15m"`
+	// Per actor; topup & withdraw sama-sama menulis penuh dengan row lock (temuan audit G-3).
+	MoneyRateLimit  int           `env:"MONEY_RATE_LIMIT" envDefault:"20"`
+	MoneyRateWindow time.Duration `env:"MONEY_RATE_WINDOW" envDefault:"1m"`
 }
 
 // Load membaca env dan memvalidasi. Error berarti aplikasi tidak boleh start.

@@ -25,6 +25,8 @@ type Deps struct {
 	LoginLimiter    allower
 	TransferLimiter allower
 	RegisterLimiter allower // per IP; argon2id di register/login mahal, tanpa limiter bisa jadi vektor DoS (G-3)
+	RefreshLimiter  allower // per IP; /auth/refresh tidak butuh auth, lookup DB tak terbatas (audit G-3)
+	MoneyLimiter    allower // per actor; topup & withdraw (audit G-3) — transfer sudah punya limiter sendiri
 	// Ready dipanggil /readyz: cek DB. Saat shutdown, Readiness.Set(false) membuat /readyz 503 duluan.
 	Ready     func(ctx context.Context) error
 	Readiness *Readiness
@@ -102,7 +104,7 @@ func NewRouter(d Deps) http.Handler {
 		api.Route("/auth", func(a chi.Router) {
 			a.With(rateLimitByIP(d.RegisterLimiter)).Post("/register", auth.register)
 			a.Post("/login", auth.login)
-			a.Post("/refresh", auth.refresh)
+			a.With(rateLimitByIP(d.RefreshLimiter)).Post("/refresh", auth.refresh)
 			a.With(authenticate(d.JWT)).Post("/logout", auth.logout)
 		})
 
@@ -114,8 +116,8 @@ func NewRouter(d Deps) http.Handler {
 
 			p.Route("/transactions", func(t chi.Router) {
 				money := t.With(idempotency)
-				money.Post("/topup", ledger.topup)
-				money.Post("/withdraw", ledger.withdraw)
+				money.With(rateLimitByActor(d.MoneyLimiter)).Post("/topup", ledger.topup)
+				money.With(rateLimitByActor(d.MoneyLimiter)).Post("/withdraw", ledger.withdraw)
 				money.With(rateLimitByActor(d.TransferLimiter)).Post("/transfer", ledger.transfer)
 				t.Get("/{id}", ledger.getTransaction)
 				t.With(requireAdmin, idempotency).Post("/{id}/reverse", ledger.reverse)

@@ -98,6 +98,8 @@ func run() error {
 		LoginLimiter:    ratelimit.New(cfg.LoginRateLimit, cfg.LoginRateWindow),
 		TransferLimiter: ratelimit.New(cfg.TransferRateLimit, cfg.TransferRateWindow),
 		RegisterLimiter: ratelimit.New(cfg.RegisterRateLimit, cfg.RegisterRateWindow),
+		RefreshLimiter:  ratelimit.New(cfg.RefreshRateLimit, cfg.RefreshRateWindow),
+		MoneyLimiter:    ratelimit.New(cfg.MoneyRateLimit, cfg.MoneyRateWindow),
 		Ready:           pool.Ping,
 		Readiness:       readiness,
 		Timeout:         30 * time.Second,

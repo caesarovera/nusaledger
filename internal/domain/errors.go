@@ -27,12 +27,17 @@ var (
 	ErrDescriptionTooLong = errors.New("deskripsi maksimal 255 karakter")
 
 	// aturan bisnis operasi
-	ErrSelfTransfer           = errors.New("tidak bisa transfer ke akun sendiri")
-	ErrInsufficientBalance    = errors.New("saldo tidak mencukupi")
-	ErrAccountNotActive       = errors.New("akun tidak aktif")
-	ErrAlreadyReversed        = errors.New("transaksi sudah pernah dibalik")
-	ErrNotReversible          = errors.New("transaksi tidak bisa dibalik")
-	ErrInvalidReversalLink    = errors.New("reversal harus menunjuk transaksi asal, transaksi lain tidak boleh")
+	ErrSelfTransfer        = errors.New("tidak bisa transfer ke akun sendiri")
+	ErrInsufficientBalance = errors.New("saldo tidak mencukupi")
+	ErrAccountNotActive    = errors.New("akun tidak aktif")
+	ErrAlreadyReversed     = errors.New("transaksi sudah pernah dibalik")
+	ErrNotReversible       = errors.New("transaksi tidak bisa dibalik")
+	ErrInvalidReversalLink = errors.New("reversal harus menunjuk transaksi asal, transaksi lain tidak boleh")
+	// ErrIntegrityViolation adalah aturan integritas data selain reversal (mis. chk_normal_balance,
+	// chk_owner pada accounts). Dipisah dari ErrInvalidReversalLink (temuan review G-3/audit
+	// keamanan): sebelumnya keduanya memakai sentinel yang sama, sehingga pesan errornya
+	// menyebut "reversal" padahal pelanggarannya sama sekali bukan soal reversal.
+	ErrIntegrityViolation     = errors.New("data melanggar aturan integritas")
 	ErrConcurrentModification = errors.New("data berubah oleh proses lain, coba lagi")
 
 	// idempotency

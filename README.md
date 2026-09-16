@@ -124,20 +124,22 @@ Selain tiga gerbang review G-1/G-2/G-3, dijalankan audit keamanan menyeluruh (bu
 
 Medium yang ditutup selain bug #6: JWT secret kini minimal 32 byte **tanpa syarat** `APP_ENV` (sebelumnya validasi ketat hanya jalan bila `APP_ENV=production` disetel eksplisit); port dev Postgres & API diikat ke `127.0.0.1` (sebelumnya `0.0.0.0`, terjangkau LAN/Wi-Fi). Low yang ditutup: `reverseRequest` sekarang divalidasi (deskripsi > 255 karakter dulu jadi 500, sekarang 400); header keamanan HTTP dipasang di root router.
 
-**Diterima sebagai keterbatasan Fase 1, tidak ditutup sekarang** (semua Low/Info, tidak eksploitatif untuk repo publik ini):
+**Ditutup pada iterasi Fase 1.1 (2026-09-16, setelah audit):**
+- Rate limit ditambah untuk `/auth/refresh` (per IP — tanpa auth, lookup DB tak terbatas) dan `topup`/`withdraw` (per actor, satu limiter `MoneyLimiter` bersama karena keduanya operasi tulis satu-akun yang setara).
+- Rotasi refresh token kini mendeteksi pemakaian ulang: token yang sudah dirotasi tapi dipakai lagi mencabut **seluruh sesi** user tersebut (bukan hanya menolak permintaan itu) — dibuktikan `TestRefresh_ReuseTerdeteksi_CabutSemuaSesi`.
+- `translate()` kini memetakan `chk_normal_balance`/`chk_owner` (tabel `accounts`) ke sentinel baru `ErrIntegrityViolation`, dipisah dari `ErrInvalidReversalLink` yang khusus untuk `chk_reversal_link` — namanya tidak lagi menyebut "reversal" untuk pelanggaran yang bukan soal reversal.
+
+**Diterima sebagai keterbatasan Fase 1, tidak ditutup** (Low/Info, tidak eksploitatif untuk repo publik ini):
 - `/metrics` tanpa autentikasi di port publik — membatasinya lewat kode akan merusak model *scraping* Prometheus standar; pembatasan yang benar ada di jaringan/reverse proxy saat deploy sungguhan.
 - Rate limit login mengunci akun korban 15 menit jika penyerang tahu emailnya — trade-off standar rate-limit-per-akun, sudah dispesifikasikan sejak docs/03 §6.
-- Beberapa endpoint (`/auth/refresh`, `topup`, `withdraw`, `reverse`) belum punya rate limit khusus di luar yang sudah ada untuk login/register/transfer.
-- Rotasi refresh token belum mendeteksi pemakaian ulang (reuse detection) untuk mencabut seluruh "family" token bila token yang sudah dirotasi dipakai lagi.
 - `/auth/register` membocorkan keberadaan email lewat `409 EMAIL_TAKEN` (orakel enumerasi), membatalkan sebagian usaha anti-enumerasi di `Login`.
-- `translate()` memetakan constraint `chk_normal_balance`/`chk_owner` (tabel `accounts`) ke sentinel `ErrInvalidReversalLink` yang namanya untuk reversal — benar secara HTTP (400) tapi salah nama.
+- `/transactions/{id}/reverse` belum punya rate limit khusus (admin-only, risiko rendah).
 
 ## Yang akan diperbaiki berikutnya
 
-- **Baris panas fee** → sharding sub-akun fee atau akumulasi per periode, lalu ukur ulang SLO di Linux native.
-- **Fase 2**: outbox relay → RabbitMQ (tabel `outbox_events` sudah ditulis sejak Fase 1), worker `cmd/worker`, rate limit Redis, role DB aplikasi tanpa hak `UPDATE/DELETE/TRUNCATE` pada `entries`.
+- **Baris panas fee** → sharding sub-akun fee atau akumulasi per periode, lalu ukur ulang SLO di Linux native. Belum dikerjakan: butuh pengukuran ulang di luar Docker Desktop Windows.
+- **Fase 2** (di luar cakupan Fase 1 secara sengaja, docs/01 §1.3): outbox relay → RabbitMQ (tabel `outbox_events` sudah ditulis sejak Fase 1), worker `cmd/worker`, rate limit Redis, role DB aplikasi tanpa hak `UPDATE/DELETE/TRUNCATE` pada `entries`, batasi `/metrics` di reverse proxy.
 - Migrasi produksi sebagai langkah deploy terpisah (`RUN_MIGRATIONS=false`), secret dari secret manager.
-- Fase 1.1: pisahkan `ErrIntegrityViolation` dari `ErrInvalidReversalLink`; rate limit `/auth/refresh`/`topup`/`withdraw`; refresh-token reuse detection; batasi `/metrics` di reverse proxy.
 
 ## Dokumen
 

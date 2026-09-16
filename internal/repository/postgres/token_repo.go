@@ -51,3 +51,14 @@ func (r *RefreshTokenRepo) Revoke(ctx context.Context, tokenHash string) error {
 	}
 	return nil
 }
+
+// RevokeAllForUser mencabut semua token aktif milik user. 0 baris (tidak ada yang
+// aktif) BUKAN error — dipanggil setelah reuse terdeteksi, keadaan itu sah terjadi.
+func (r *RefreshTokenRepo) RevokeAllForUser(ctx context.Context, userID int64) error {
+	if _, err := r.db.Exec(ctx, `
+		UPDATE refresh_tokens SET revoked_at = now()
+		WHERE user_id = $1 AND revoked_at IS NULL`, userID); err != nil {
+		return fmt.Errorf("cabut semua refresh token user %d: %w", userID, err)
+	}
+	return nil
+}

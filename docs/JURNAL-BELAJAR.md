@@ -788,6 +788,45 @@ Kalau memakai `int64` biasa dan menulis `0` untuk "disembunyikan", klien tidak b
 
 ---
 
+## Sesi 32 — Fase 1.1: menuntaskan tiga item susulan dari HANDOVER (2026-09-16)
+
+### Apa
+Permintaan: "lanjutkan tasklist yang belum sesuai plan". `HANDOVER.md` §Berikutnya mencatat empat item: tag `v1.0.1` (sudah dikerjakan sesi sebelumnya), tiga item Fase 1.1 (belum), sharding fee (butuh Linux native), dan Fase 2 (sengaja di luar cakupan Fase 1, docs/01 §1.3 — bukan "belum", tapi "tidak sekarang"). Dikerjakan tiga item Fase 1.1:
+
+1. **`ErrIntegrityViolation`** — sentinel baru di domain/errors.go, dipisah dari `ErrInvalidReversalLink`. `translate()` (repository/postgres/errors.go) sekarang: `chk_reversal_link` → `ErrInvalidReversalLink` (memang soal reversal); `chk_normal_balance`, `chk_owner` → `ErrIntegrityViolation` (soal `accounts`, bukan reversal).
+2. **Rate limit refresh & topup/withdraw** — `rateLimitByIP` dipasang di `/auth/refresh` (limiter baru `RefreshLimiter`); `rateLimitByActor` dipasang di `topup` dan `withdraw` dengan **satu** limiter (`MoneyLimiter`) yang dipakai BERSAMA oleh keduanya.
+3. **Refresh-token reuse detection** — `RefreshTokenStore.RevokeAllForUser(ctx, userID)` baru. `Auth.Refresh` memeriksa `rt.RevokedAt != nil` sebelum `Usable()`: kalau token yang diajukan sudah pernah dicabut tapi dipakai lagi, cabut SEMUA sesi user itu.
+
+### Kenapa topup dan withdraw berbagi SATU limiter, bukan dua terpisah
+Awalnya sempat dipertimbangkan menggabungkannya dengan `TransferLimiter` yang sudah ada (`transfer` sudah punya limiter sendiri) — ditolak, karena itu akan diam-diam mengubah budget efektif `transfer` (tiga operasi memperebutkan satu kuota yang tadinya dirancang untuk satu operasi). Membuat limiter TERPISAH untuk topup dan withdraw masing-masing juga berlebihan: keduanya operasi tulis satu-akun yang setara risikonya (kunci satu baris + satu baris sistem), jadi wajar berbagi satu kuota. Satu limiter baru (`MoneyLimiter`) adalah titik tengah yang tepat: menambah proteksi tanpa mengubah perilaku `transfer` yang sudah ada dan sudah diuji.
+
+### Kenapa reuse detection TIDAK butuh migrasi skema
+Desain "token family" yang lengkap (kolom `family_id`, melacak silsilah rotasi) adalah cara yang lebih presisi, tapi butuh migrasi baru dan mengubah bentuk `Store()`. Insight yang membuat versi tanpa migrasi tetap benar: `Revoke()` **tidak menghapus baris**, hanya mengisi `revoked_at`. Itu berarti baris token yang sudah dirotasi TETAP ADA di tabel, dan `Find()` masih menemukannya. Jadi "token ini pernah ada, dan `revoked_at` terisi" SAMA PERSIS dengan "token ini sudah dirotasi sebelumnya" — sinyal reuse tanpa perlu kolom baru apa pun. Responsnya sengaja "nuke semua sesi" (bukan hanya menolak permintaan), karena begitu satu token dalam rantai rotasi terbukti bocor, tidak ada cara mengetahui token MANA dalam rantai itu yang masih dipegang penyerang — mencabut semuanya adalah satu-satunya respons yang aman.
+
+### Contoh — kenapa urutan pengecekan penting
+```go
+if rt.RevokedAt != nil {           // reuse — HARUS diperiksa DULU
+    a.tokens.RevokeAllForUser(ctx, rt.UserID)
+    return nil, domain.ErrInvalidToken
+}
+if !rt.Usable(a.now()) {           // kedaluwarsa biasa — baru diperiksa SETELAHNYA
+    return nil, domain.ErrInvalidToken
+}
+```
+`Usable()` sudah mengembalikan `false` untuk token yang dicabut ATAU kedaluwarsa — kalau urutan dibalik, reuse yang sudah lama (jadi juga sudah lewat masa berlakunya) akan salah terklasifikasi sebagai "kedaluwarsa biasa" dan tidak pernah memicu pencabutan seluruh sesi. Klasifikasi HARUS lebih spesifik dulu (revoked = reuse) sebelum klasifikasi umum (tidak usable).
+
+### Bukti
+```
+TestHTTP_RefreshRateLimit, TestHTTP_MoneyRateLimit         PASS
+TestRefresh_ReuseTerdeteksi_CabutSemuaSesi                 PASS (sesi lain yang tidak terlibat pun ikut tercabut)
+go test -race (-count=1) seluruh internal/...              hijau
+go test -tags=integration -race (-count=1) seluruh test/...  hijau
+T-04 -race -count=3                                        hijau (tidak ada regresi pada jalur uang)
+golangci-lint run                                          0 issues
+```
+
+---
+
 ## Status akhir sesi (2026-09-16)
 
-Sesi 1–31 selesai: Fase 1 penuh, tiga gerbang review (G-1 inline, G-2, G-3), dan audit keamanan menyeluruh atas seluruh repo (bukan hanya diff). Satu bug High (kebocoran saldo lintas pengguna) ditemukan dan ditutup SETELAH tag `v1.0.0` — pertimbangkan `v1.0.1` untuk memuat perbaikan ini. Ringkasan bukti ada di README §Hasil Pengujian, §Bug yang saya temukan sendiri lewat test (enam bug — tiga ditemukan lewat review/audit model, bukan test yang sudah ada), dan §Audit Keamanan Penuh. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.
+Sesi 1–32 selesai: Fase 1 penuh (termasuk Fase 1.1), tiga gerbang review (G-1 inline, G-2, G-3), audit keamanan menyeluruh, dan tiga perbaikan susulan dari audit (integrity error terpisah, rate limit refresh/topup/withdraw, refresh-token reuse detection). Item yang SENGAJA belum dikerjakan: sharding akun fee (butuh Linux native untuk pengukuran ulang SLO) dan seluruh Fase 2 (di luar cakupan Fase 1 secara sengaja, docs/01 §1.3) — keduanya tercatat jelas di README, bukan terlupa. Ringkasan bukti ada di README §Hasil Pengujian, §Bug yang saya temukan sendiri lewat test, dan §Audit Keamanan Penuh. Semua keputusan, jebakan, dan alasan tercatat di jurnal ini agar bisa diulang manual dari repo kosong.

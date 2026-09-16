@@ -66,6 +66,15 @@ func (m *memTokens) Revoke(_ context.Context, hash string) error {
 	t.RevokedAt = &now
 	return nil
 }
+func (m *memTokens) RevokeAllForUser(_ context.Context, userID int64) error {
+	now := time.Now()
+	for _, t := range m.byHash {
+		if t.UserID == userID && t.RevokedAt == nil {
+			t.RevokedAt = &now
+		}
+	}
+	return nil
+}
 
 // hasher palsu yang bisa dihitung: hash = "h:" + password. Cukup untuk menguji alur, bukan kriptografi.
 type fakeHasher struct{ verifyCalls int }
@@ -208,5 +217,41 @@ func TestRefreshDanLogout(t *testing.T) {
 	}
 	if _, err := a.Refresh(ctx, pair3.RefreshToken); !errors.Is(err, domain.ErrInvalidToken) {
 		t.Fatal("setelah logout, refresh harus ditolak")
+	}
+}
+
+// Temuan audit A-4: token yang sudah dirotasi tapi dipakai LAGI adalah sinyal token
+// dicuri (rotasi normal tidak pernah memakai token yang sama dua kali). Respons
+// defensif: cabut SEMUA sesi user, bukan hanya menolak permintaan reuse ini.
+func TestRefresh_ReuseTerdeteksi_CabutSemuaSesi(t *testing.T) {
+	a, _, tokens, _ := newAuth(t)
+	ctx := context.Background()
+	_, _, _ = a.Register(ctx, service.RegisterInput{Email: "andi@x.com", Password: "rahasia123", FullName: "Andi"})
+
+	pairA, _ := a.Login(ctx, "andi@x.com", "rahasia123") // sesi A, mis. laptop
+	pairB, _ := a.Login(ctx, "andi@x.com", "rahasia123") // sesi B, mis. HP — dua sesi aktif bersamaan
+
+	pairA2, err := a.Refresh(ctx, pairA.RefreshToken) // rotasi normal sesi A
+	if err != nil {
+		t.Fatalf("rotasi normal: %v", err)
+	}
+
+	// Token LAMA sesi A dipakai lagi — skenario: token itu dicuri SEBELUM dirotasi.
+	if _, err := a.Refresh(ctx, pairA.RefreshToken); !errors.Is(err, domain.ErrInvalidToken) {
+		t.Fatalf("reuse: mau ErrInvalidToken, dapat %v", err)
+	}
+
+	// Efeknya BUKAN hanya token lama sesi A yang mati: token BARU sesi A (pairA2) dan
+	// sesi B yang sama sekali tidak terlibat pun ikut tercabut — nuke seluruh sesi.
+	if _, err := a.Refresh(ctx, pairA2.RefreshToken); !errors.Is(err, domain.ErrInvalidToken) {
+		t.Fatalf("sesi A (baru, tidak dipakai penyerang) harus ikut tercabut, dapat %v", err)
+	}
+	if _, err := a.Refresh(ctx, pairB.RefreshToken); !errors.Is(err, domain.ErrInvalidToken) {
+		t.Fatalf("sesi B (tidak terlibat sama sekali) harus ikut tercabut, dapat %v", err)
+	}
+	for hash, rt := range tokens.byHash {
+		if rt.RevokedAt == nil {
+			t.Fatalf("semua token user harus tercabut setelah reuse terdeteksi, %q masih aktif", hash)
+		}
 	}
 }
