@@ -1,11 +1,25 @@
 # HANDOVER
 
+## Terakhir dikerjakan (2026-09-20) — Deny rule `psql` yang tidak valid dibersihkan; hook penggantinya sengaja dibatalkan
+
+Claude Code memperingatkan saat start bahwa deny rule `Bash(psql:*production*)` di `.claude/settings.json` **tidak valid dan dilewati** — sintaks `Bash(...)` hanya mengenal `:*` sebagai penanda prefix di AKHIR pola, bukan wildcard di tengah. Rule itu tidak pernah menjaga apa pun sejak ditulis.
+
+Penggantinya sempat dibuat dan **terbukti jalan**: hook `PreToolUse` (skrip Python, exit code 2 = blokir) yang memblokir perintah memuat `psql` + `production` sekaligus, dipilih karena `psql` ke DB dev lokal masih dipakai sehingga `Bash(psql:*)` terlalu luas. Lalu **dibongkar lagi di sesi yang sama** setelah ditinjau ulang — alasannya panjang dan dicatat penuh di jurnal Sesi 41, intinya: `Bash(migrate:*)` dan `Bash(make:*)` ada di daftar **allow** (otomatis, tanpa prompt) padahal `make migrate-up` jauh lebih merusak daripada `psql`, jadi pengaman paling ketat terpasang di perintah paling ringan; pola `production` hanya menangkap kasus yang penulisnya sudah sadar; dan yang berbahaya sebenarnya adalah **kredensial**, bukan biner `psql`. Repo ini juga belum punya production sama sekali.
+
+**Hasil akhir: `.claude/settings.json` kehilangan tepat SATU baris (deny rule rusak), nol baris ditambah.** Tidak ada file hook yang tersisa.
+
+**Kontrol yang sebenarnya melindungi — sudah ada sejak sebelumnya, tidak diubah:** `Read(./.env)`/`Read(./.env.*)` di deny (isolasi kredensial) dan role `nusaledger_app` (Sesi 35, `REVOKE UPDATE/DELETE` pada `entries`, ditegakkan Postgres sendiri).
+
+**Aturan pengganti (keputusan, bukan kode):** kredensial production tidak pernah masuk ke `.env` repo ini maupun ke environment sesi Claude Code. Saat production benar-benar ada, guard (kalau dipakai) menyasar *connection string/host*, berlaku untuk SEMUA perintah — bukan hanya `psql` — dan tetap lapis kedua di bawah isolasi kredensial.
+
+**Status:** belum di-commit — menunggu keputusan Anda.
+
 ## Terakhir dikerjakan (2026-09-16, lanjutan) — CI merah diperbaiki: image `api` melebihi ambang 20 MB
 Ditanya "opsi A dulu" (perbaiki CI yang merah sebelum memilih arah lanjutan). Dicek dengan `gh run list`/`gh run view`: job `image` gagal di push Sesi 35–39, image `api` sekarang 24 MB (ambang lama 20 MB). Akar masalah dikonfirmasi dengan `git diff v1.1.0 main -- go.mod` + `go list -deps ./cmd/api`: `github.com/redis/go-redis/v9` (Sesi 36) satu-satunya dependensi produksi baru yang ikut ke binary `cmd/api`, membawa 14 sub-paket. Image `worker` TIDAK terpengaruh (tetap 13,5 MB, tidak mengimpor `ratelimit`).
 
 **Perbaikan**: ambang `.github/workflows/ci.yml` untuk `api` dinaikkan 20→**30 MB** (headroom ~15% di atas ukuran real ~25 MB), dengan komentar yang menjelaskan kenapa — BUKAN memangkas fitur Redis demi lolos angka lama yang sudah tidak mencerminkan realita Fase 2. `README.md` diperbarui (ukuran `api` dan `worker` dicantumkan terpisah, dengan alasan kenaikan). Detail penuh (termasuk cara mendiagnosis kenaikan ukuran tanpa menebak) di jurnal Sesi 40.
 
-**Status:** perbaikan ini masih LOKAL, belum di-push — menunggu konfirmasi Anda sebelum push, sesuai `CLAUDE.md`.
+**Status (diperbarui 2026-09-20):** sudah di-push; `main` sejajar dengan `origin/main`. Catatan "masih LOKAL" di atas sudah tidak berlaku.
 
 ## Terakhir dikerjakan (2026-09-16, lanjutan) — Menutup dua lubang dokumentasi + tag `v1.2.0`
 Ditanya "apakah dari tahap setup awal sampai sekarang sudah dijelaskan step by step". Jawabannya sebagian besar ya, tapi ditemukan dua lubang nyata lewat pemeriksaan ulang `docs/JURNAL-BELAJAR.md`:
@@ -17,7 +31,7 @@ Ditutup dengan **Sesi 38 dan 39** (jurnal, ditulis mundur — kejadiannya SUDAH 
 
 **Juga dibuat tag `v1.2.0`** (lokal, BELUM di-push) menandai Fase 2 benar-benar selesai total — tag `v1.1.0` sebelumnya hanya menunjuk ke slice outbox pertama (commit `3aef909`), sebelum tiga pekerjaan terakhir (role DB, Redis, `/metrics`). `v1.1.0` TIDAK diubah/dipindah, `v1.2.0` ditambahkan di HEAD saat ini (`4a56ddf`).
 
-**Status push:** empat commit terbaru (role DB, Redis, `/metrics` docs, dua entri jurnal) + tag `v1.2.0` masih LOKAL SAJA, belum di-push — sesuai `CLAUDE.md` ("Jangan git push. Push adalah keputusan manusia"), menunggu keputusan Anda.
+**Status push (diperbarui 2026-09-20):** sudah di-push, termasuk tag `v1.2.0` (terverifikasi ada di `origin`). Catatan "masih LOKAL SAJA" di atas sudah tidak berlaku.
 
 ## Terakhir dikerjakan (2026-09-16, lanjutan) — Batasi `/metrics` di jaringan (Fase 2, item terakhir — FASE 2 SELESAI TOTAL)
 Item ketiga dan terakhir dari "lanjutkan berdasarkan prioritas terpenting dahulu". Sengaja BUKAN perubahan kode: `/metrics` tanpa autentikasi di level aplikasi TETAP demikian (mengubahnya akan merusak model *scraping* Prometheus standar), pembatasan yang benar ada di jaringan. Ditulis `docs/deploy-metrics-network.md` — contoh konfigurasi nginx (`allow`/`deny` per CIDR), Caddy (`remote_ip` matcher), dan alternatif `NetworkPolicy` Kubernetes (lebih kuat: menempel di Pod, bukan per instance proxy) — plus penjelasan kenapa dev repo ini SUDAH aman (semua port diikat `127.0.0.1` sejak audit F-2).
@@ -102,6 +116,7 @@ Coverage: domain 99,1 %, service 84,2 %. Bukti lengkap di `docs/evidence/`. Jurn
 ## Berikutnya
 **Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SELESAI TOTAL** (tag `v1.2.0`, sudah di-push ke GitHub) — outbox relay, role DB terbatas, rate limit Redis, pembatasan jaringan `/metrics`, semua selesai dan terverifikasi. Jurnal juga sudah ditutup lubangnya (Sesi 38–39: setup GitHub/push/CI, identitas git). Tidak ada item Fase 1/Fase 2 yang tersisa.
 1. Satu-satunya item lama yang masih terbuka di seluruh proyek: pengukuran ulang k6 di Linux native untuk menutup selisih p95 10 ms dari Sesi 33. **Bukan blocker**, dan mesin ini TIDAK punya distro WSL2 biasa (hanya `docker-desktop` internal) — mengerjakan ini butuh memasang distro (mis. Ubuntu) dulu, keputusan infrastruktur yang lebih baik ditanyakan, bukan diasumsikan.
+1b. Perubahan Sesi 41 (`.claude/settings.json` −1 baris, jurnal, HANDOVER) belum di-commit.
 2. Tidak ada rencana Fase 3 yang dikunci — kalau diminta melanjutkan lagi, tanyakan dulu arah yang diinginkan (Fase 2 tidak punya PRD sejak awal; sudah dikerjakan atas asumsi eksplisit yang dicatat di jurnal Sesi 34).
 
 ## Keputusan yang sudah diambil

@@ -1159,9 +1159,64 @@ go list -deps ./cmd/api | grep redis → 14 baris (go-redis + sub-paketnya)
 
 ---
 
-## Status akhir sesi (2026-09-16)
+## Sesi 41 — Guardrail yang salah sasaran: hook pemblokir `psql` production dibangun, lalu dibongkar sendiri
 
-Sesi 1–40 selesai. **Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SELESAI TOTAL**: outbox relay (Sesi 34), role DB terbatas untuk `entries` (Sesi 35), rate limit Redis opsional (Sesi 36), pembatasan jaringan `/metrics` (Sesi 37) — tidak ada item Fase 2 yang tersisa. Sesi 38–39 menutup dua lubang dokumentasi yang ditemukan lewat pemeriksaan ulang (setup GitHub/push/CI, dan identitas git). Sesi 40 menutup CI yang sempat merah setelah push Sesi 35–39 (ambang ukuran image, bukan bug). Satu-satunya keterbatasan yang masih terbuka di seluruh proyek: p95 10 ms di atas target dari pengukuran k6 di Docker Desktop Windows (Sesi 33), dicatat sadar sebagai keterbatasan lingkungan, bukan bug.
+### Apa
+Claude Code menampilkan peringatan saat start: deny rule `Bash(psql:*production*)` di `.claude/settings.json` **tidak valid dan dilewati**. Sintaks permission untuk `Bash` hanya mengenal `:*` sebagai penanda *prefix* di AKHIR pola (`Bash(psql:*)` = semua perintah yang diawali `psql`); ia bukan wildcard yang bisa dipasang di tengah. Artinya rule itu **tidak pernah menjaga apa pun sejak hari ditulis** — ia hanya terlihat seperti pengaman.
+
+Penggantinya dibuat dulu berupa hook `PreToolUse`: skrip Python yang membaca JSON dari stdin (`{"tool_name":"Bash","tool_input":{"command":"..."}}`) dan keluar dengan exit code 2 bila perintah memuat `psql` sekaligus `production` — exit 2 adalah kode yang diartikan Claude Code sebagai "blokir, kirim stderr sebagai alasan". Dipilih hook, bukan `Bash(psql:*)`, karena `psql` lokal ke DB dev memang dipakai dan tidak boleh ikut mati.
+
+Hook itu **terbukti jalan**, lalu **dibongkar lagi di sesi yang sama** setelah ditinjau ulang. Hasil akhir: `.claude/settings.json` hanya kehilangan satu baris (deny rule rusak), tanpa ada pengganti berupa kode.
+
+### Kenapa dibongkar — ini inti pelajarannya
+Hook-nya benar sebagai kode (regexnya lulus 7 kasus uji), tapi salah sebagai **kontrol keamanan**:
+
+1. **Menjaga pintu yang paling tidak berbahaya.** Di `settings.json` yang sama, `Bash(migrate:*)` dan `Bash(make:*)` ada di daftar **allow** — otomatis disetujui tanpa prompt. `migrate` menerima `-database <url>`; kalau suatu hari `DATABASE_URL` production ada di environment, `make migrate-up` **mengubah skema** production tanpa satu pun konfirmasi, sementara `psql -c "select 1"` ke database yang sama ditembok keras. Pengaman paling ketat terpasang di perintah paling ringan.
+2. **Polanya menangkap kasus yang justru paling sadar.** Perintah yang memuat kata `production` secara literal adalah perintah yang penulisnya tahu sedang menyentuh prod. Cara prod tersentuh TANPA sadar — `$DATABASE_URL` dari env, host `xxx.rds.amazonaws.com`, `.pgpass`, `docker compose -f compose.prod.yml exec` — tidak satu pun memuat kata itu.
+3. **Kata benda yang dijaga keliru.** Yang berbahaya bukan biner `psql`, melainkan **kredensial/connection string**. `psql` cuma satu dari banyak jalan ke database yang sama (`migrate`, `go run ./cmd/api`, `go test` integration, `docker compose exec`).
+4. **Rasa aman palsu — dan ini yang paling merugikan.** Percaya "prod aman, sudah ada hook" membuat kewaspadaan pada vektor sebenarnya (poin 1–3) menurun. Kontrol yang bocor secara struktural TAPI dipercaya penuh lebih berbahaya daripada tidak ada kontrol sama sekali.
+
+Ditambah konteks yang menentukan: **repo ini belum punya production sama sekali** (compose hanya menunjuk `postgres:5432` internal, password literal `app_dev_only_ganti_di_produksi`). Membangun mesin untuk menjaga sesuatu yang belum ada, dengan pola yang akan meleset justru saat hal itu ada, adalah biaya tanpa manfaat.
+
+**Kontrol yang BENAR ternyata sudah ada di repo ini sejak sebelumnya**, dan keduanya jauh lebih kuat karena bekerja di lapisan yang tidak bisa dilewati dengan mengubah teks perintah:
+- `Read(./.env)` + `Read(./.env.*)` di deny — **isolasi kredensial**. Kalau kredensial tidak bisa dibaca, koneksi tidak bisa dibuat, apa pun binernya.
+- Role `nusaledger_app` (Sesi 35) — `REVOKE UPDATE/DELETE` pada `entries` ditegakkan **Postgres sendiri**, berlaku untuk siapa pun yang terhubung dengan cara apa pun.
+
+**Aturan yang menggantikan hook (keputusan, bukan kode):** kredensial production tidak pernah masuk ke `.env` repo ini maupun ke environment sesi Claude Code. Saat production benar-benar ada, guard (kalau dipakai) menyasar *connection string/host*, berlaku untuk SEMUA perintah — bukan hanya `psql` — dan tetap sebagai lapis kedua di bawah isolasi kredensial, bukan sebagai lapis utama.
+
+### Contoh — dua temuan mekanis yang layak diingat soal hook
+```bash
+# 1. Skrip hook yang HILANG = SEMUA perintah Bash terblokir.
+python "C:/tidak/ada/hook.py"; echo $?
+#   python.exe: can't open file ... [Errno 2] No such file or directory
+#   2          ← persis kode "blokir" milik PreToolUse
+```
+Jebakannya: `.claude/settings.json` **dilacak git**, sedangkan skrip hook tadi **belum**. Kalau hanya `settings.json` yang di-commit, setiap clone (termasuk mesin sendiri yang lain) mendapat Bash yang lumpuh total dengan pesan yang tidak menjelaskan apa-apa. `git clean -fd` memberi efek yang sama. Kebalikannya juga ada: `python` di mesin ini berasal dari laragon, bukan instalasi sistem — kalau laragon dicopot, exit code jadi `127`, yang **tidak** memblokir, sehingga hook mati diam-diam tanpa peringatan. Satu skrip, dua mode kegagalan ke arah berlawanan.
+
+```bash
+# 2. Biayanya dibayar di SETIAP panggilan Bash, bukan hanya yang berbahaya.
+#    Diukur 5x: ~98 ms per panggilan (startup interpreter Python di Windows).
+```
+
+### Bukti
+```
+Regex awal (^|[;&|]\s*)psql\b  → LOLOS (tidak terblokir) untuk:
+  PGPASSWORD=x psql -d production
+  docker compose exec db psql -d nusaledger_production
+  /usr/bin/psql production
+Diganti \bpsql\b → 7/7 kasus uji benar (4 blokir, 3 lolos termasuk
+  `psql -h localhost -d nusaledger_dev` dan `grep production docs/README.md`)
+
+Diuji sungguhan lewat tool Bash, bukan simulasi:
+  psql --version production → PreToolUse:Bash hook error: diblokir: ...
+```
+Hook ini sempat benar-benar aktif dan memblokir, jadi pembongkarannya adalah keputusan desain atas sesuatu yang **berfungsi** — bukan menyerah pada sesuatu yang gagal dibuat. `git diff .claude/settings.json` akhir sesi: **satu baris terhapus**, nol baris ditambah.
+
+---
+
+## Status akhir sesi (2026-09-20)
+
+Sesi 1–41 selesai. **Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SELESAI TOTAL**: outbox relay (Sesi 34), role DB terbatas untuk `entries` (Sesi 35), rate limit Redis opsional (Sesi 36), pembatasan jaringan `/metrics` (Sesi 37) — tidak ada item Fase 2 yang tersisa. Sesi 38–39 menutup dua lubang dokumentasi yang ditemukan lewat pemeriksaan ulang (setup GitHub/push/CI, dan identitas git). Sesi 40 menutup CI yang sempat merah setelah push Sesi 35–39 (ambang ukuran image, bukan bug). Sesi 41 membersihkan deny rule `Bash(psql:*production*)` yang ternyata tidak valid sejak ditulis, dan sengaja TIDAK menggantinya dengan kode — alasannya dicatat penuh di entri Sesi 41. Satu-satunya keterbatasan yang masih terbuka di seluruh proyek: p95 10 ms di atas target dari pengukuran k6 di Docker Desktop Windows (Sesi 33), dicatat sadar sebagai keterbatasan lingkungan, bukan bug.
 
 **Catatan tentang penomoran sesi**: nomor 10, 15–17, 21, dan 25 (dari tabel 30-sesi rencana awal, `docs/06-PLAN-EKSEKUSI-AI.md`) tidak muncul sebagai judul tersendiri di jurnal ini — isinya ADA, tapi digabung ke entri sesi lain karena pekerjaannya kecil/terkait langsung (mis. review G-1/Sesi 10 disebut inline di entri Sesi 4 "Migration & skema"; reversal/Sesi 21 ada di dalam Sesi 12–13 "LedgerRepo.Post"; E2E IDOR/Sesi 25 ada di dalam Sesi 23–24 & 27). Kalau mencari topik tertentu, cari kata kuncinya (mis. "reversal", "IDOR") lewat pencarian teks, bukan nomor sesinya.
 
