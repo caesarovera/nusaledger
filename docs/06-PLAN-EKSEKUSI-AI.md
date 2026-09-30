@@ -13,7 +13,7 @@
 |---|---|
 | Kualitas dokumen | Sangat matang. PRD, skema, dan spesifikasi konsisten satu sama lain kecuali 6 titik kecil (§2). Tidak perlu redesign. |
 | Kesiapan mesin | **Belum siap.** Go, make, migrate, golangci-lint, govulncheck, k6, dlv belum terpasang. Docker daemon jalan (v29.7), psql 16.2 client ada, winget ada. Repo belum `git init`. |
-| Strategi AI | Pola dokumen 04 dipertahankan: **memutuskan → mengerjakan → mencari** dipetakan ke **Opus 5 → Sonnet 5 → Haiku 4.5**, plus **Fable 5.1** hanya untuk 3 gerbang review tertinggi. Tambah 1 agent (`senior-devops`) dan 3 skill baru. |
+| Strategi AI | Pola dokumen 04 dipertahankan: **memutuskan → mengerjakan → mencari** dipetakan ke **Opus 5.5 → Sonnet 5 → Haiku 4.5**. 3 gerbang review tertinggi juga memakai **Opus 5.5** (effort tinggi/`xhigh`), bukan lagi Fable. Tambah 1 agent (`senior-devops`) dan 3 skill baru. |
 | Jumlah sesi | 30 sesi kerja dalam 4 minggu, tiap sesi satu peran, satu tujuan, satu `/clear`. |
 | Risiko utama | Bukan teknis, tapi scope creep dan kehabisan tenaga. Plan ini memaksa repo "bisa dipamerkan" di akhir setiap minggu. |
 
@@ -101,12 +101,12 @@ Tidak disetujui: framework DI, ORM, validator berbasis reflection (validasi ditu
 
 | Model | Alias frontmatter | Harga API (in/out per 1M) | Peran di proyek ini |
 |---|---|---|---|
-| **Claude Fable 5.1** | `fable` (Agent tool) / sesi utama | $10 / $50 | **3 gerbang review** saja (G-1, G-2, G-3 di §4). Terlalu mahal untuk pekerjaan rutin. |
-| **Claude Opus 5** | `opus` | $5 / $25 | **Memutuskan**: arsitektur, skema, review konkurensi, debugging buntu. |
+| **Claude Opus 5.5** | `opus` (Agent tool) / sesi utama | $5 / $25 | **Memutuskan**: arsitektur, skema, review konkurensi, debugging buntu, DAN **3 gerbang review** (G-1, G-2, G-3 di §4, effort tinggi/`xhigh`, read-only). Model termahal yang dipakai proyek ini sejak Fable dihentikan. |
 | **Claude Sonnet 5** | `sonnet` | $2 / $10 | **Mengerjakan**: implementasi, test, DevOps, dokumentasi. |
 | **Claude Haiku 4.5** | `haiku` | $1 / $5 | **Mencari**: explorer, perbaikan lint/format mekanis. |
 
-Catatan: pada plan Pro, biaya di atas tercermin sebagai konsumsi kuota, bukan tagihan. Rasio harganya tetap jadi panduan: satu review Fable ≈ 5 sesi Sonnet. Verifikasi routing lewat dashboard usage setelah minggu pertama (dok 04 §3.6).
+Catatan: pada plan Pro, biaya di atas tercermin sebagai konsumsi kuota, bukan tagihan. Rasio harganya tetap jadi panduan: satu review Opus ≈ 2,5 sesi Sonnet. Verifikasi routing lewat dashboard usage setelah minggu pertama (dok 04 §3.6).
+**Perubahan 2026-09-30:** Fable 5.1 dihentikan sebagai model gerbang review. Tiga gerbang (G-1/G-2/G-3) sekarang memakai Opus versi terbaru (5.5) dengan effort tinggi/`xhigh`, bukan model terpisah yang lebih mahal. Ini kebijakan ke depan — entri jurnal/HANDOVER yang sudah mencatat G-2/G-3 memakai Fable TIDAK diubah, karena itu catatan sejarah apa yang benar-benar dijalankan saat itu.
 
 **Aturan effort:**
 - `high`/`xhigh` hanya untuk: desain skema, `PostTransaction`, T-04/T-05/T-07, debugging buntu, tiga gerbang review.
@@ -279,9 +279,9 @@ slog JSON; field wajib: request_id, user_id, transaction_id, duration_ms. Redaks
 
 ---
 
-## 4. Tiga Gerbang Review (Fable 5.1)
+## 4. Tiga Gerbang Review (Opus 5.5)
 
-Model termahal dipakai hanya di tiga titik yang kesalahannya paling mahal untuk dibongkar belakangan. Setiap gerbang bersifat **read-only** dan menghasilkan daftar temuan berprioritas yang dicatat di `HANDOVER.md`.
+Model termahal (Opus, effort tinggi/`xhigh`) dipakai hanya di tiga titik yang kesalahannya paling mahal untuk dibongkar belakangan. Setiap gerbang bersifat **read-only** dan menghasilkan daftar temuan berprioritas yang dicatat di `HANDOVER.md`.
 
 | Gerbang | Kapan | Input | Pertanyaan yang harus dijawab |
 |---|---|---|---|
@@ -289,7 +289,7 @@ Model termahal dipakai hanya di tiga titik yang kesalahannya paling mahal untuk 
 | **G-2 PostTransaction & konkurensi** | Minggu 3, setelah T-04/T-05/T-07 hijau | `ledger_repo.go`, `ledger_service.go`, `idempotency.go`, ketiga test | Apakah ada jendela waktu antara cek dan tulis? Apa yang terjadi kalau proses mati di setiap baris? Apakah test benar-benar membuktikan, atau hanya kebetulan lulus? |
 | **G-3 Rilis** | Akhir minggu 4, sebelum tag `v1.0.0` | Seluruh diff sejak G-2, README, hasil k6, `/security-review` | Apakah semua DoD PRD §6 terbukti dengan artefak, bukan klaim? Apa yang akan ditanyakan pewawancara dan apakah jawabannya ada di README? |
 
-Cara memanggil: dari sesi utama, `Pakai model fable, effort tinggi, read-only: tinjau ... Jangan ubah file. Keluarkan temuan berurutan dari yang paling berbahaya.` Lalu `/clear`.
+Cara memanggil: dari sesi utama, `Pakai model opus, effort tinggi (xhigh untuk G-2), read-only: tinjau ... Jangan ubah file. Keluarkan temuan berurutan dari yang paling berbahaya.` Lalu `/clear`.
 
 ---
 
@@ -310,7 +310,7 @@ Kolom **Peran** = agent/skill yang dipanggil dari sesi utama. Kolom **Bukti** = 
 | 7 | Domain: Money | `senior-go-dev` (Sonnet, medium) | 03 §2; skill `ledger-invariants` | `domain/money.go`, `errors.go` | — |
 | 8 | Domain: Transaction, Validate, BalanceDelta | `senior-go-dev` (Sonnet, medium) | 03 §3; K-02 | `domain/transaction.go`, `account.go`, `entry.go`, `user.go` | `go vet` bersih |
 | 9 | Unit test domain | `senior-qa` (Sonnet, medium) | 05 L5–L6; T-01, T-14, K-02 | `domain/*_test.go` table-driven | `make test` hijau < 5 s; coverage domain ≥ 90 % |
-| 10 | **G-1 Review skema & penguncian** | **Fable 5.1 (high, read-only)** | migrations, docs/02, HANDOVER | Daftar temuan di HANDOVER | Temuan kritis = 0 sebelum minggu 2 |
+| 10 | **G-1 Review skema & penguncian** | **Opus 5.5 (high, read-only)** | migrations, docs/02, HANDOVER | Daftar temuan di HANDOVER | Temuan kritis = 0 sebelum minggu 2 |
 
 Akhir minggu 1: repo bisa `make test` hijau dan `make migrate-up` jalan. Sudah bisa dipamerkan sebagai "skema ledger yang constraint-nya terbukti".
 
@@ -338,7 +338,7 @@ Akhir minggu 1: repo bisa `make test` hijau dan `make migrate-up` jalan. Sudah b
 | 23 | HTTP: response, dto, middleware | `senior-go-dev` (Sonnet, medium) | 05 L12; skill `api-contract` | `transport/http/{response,dto,middleware}.go`, rate limiter in-memory (F-04) | Test tabel pemetaan error → status untuk semua kode katalog |
 | 24 | HTTP: handler + router + main | `senior-go-dev` (Sonnet, medium) | 03 §4; handbook 2.4 (DI manual) | `handler_*.go`, `router.go`, `cmd/api/main.go` | `make run` → curl register/login/topup/transfer sesuai 05 L12 |
 | 25 | E2E httptest + T-11 (IDOR) + T-12 | `senior-qa` (Sonnet, medium) | 03 §7.2 | `test/integration/http_test.go` | User A baca akun B → 404/403; ctx cancel → `context.Canceled` |
-| 26 | **G-2 Review PostTransaction & konkurensi** | **Fable 5.1 (xhigh, read-only)** | ledger_repo, ledger_service, idempotency, test 19–21 | Temuan di HANDOVER | Temuan kritis = 0; `/code-review high` sebagai pelengkap |
+| 26 | **G-2 Review PostTransaction & konkurensi** | **Opus 5.5 (xhigh, read-only)** | ledger_repo, ledger_service, idempotency, test 19–21 | Temuan di HANDOVER | Temuan kritis = 0; `/code-review high` sebagai pelengkap |
 
 ### Minggu 4 — Observability, load test, Docker, CI, README (target: T-13 hijau; SLO tercapai; `docker compose up` jalan)
 
@@ -347,7 +347,7 @@ Akhir minggu 1: repo bisa `make test` hijau dan `make migrate-up` jalan. Sudah b
 | 27 | Metrik, health, pprof, drift job, graceful shutdown | `senior-devops` (Sonnet, medium) | 03 §8; 05 L13; F-05; K-06 | `platform/metrics`, `/healthz`, `/readyz`, `/metrics`, ticker drift, `Shutdown` | T-13 in-process hijau; `/metrics` memuat 8 metrik wajib |
 | 28 | Dockerfile + compose lengkap + CI | `senior-devops` (Sonnet, medium) | handbook 9.1–9.3 (adaptasi ke GitHub Actions) | `Dockerfile`, `docker-compose.yml` (api + postgres + migrate), `.github/workflows/ci.yml` | image < 20 MB; `docker compose up` dari nol jalan; CI hijau di PR pertama |
 | 29 | Load test k6 + verifikasi | `senior-devops` (Sonnet, medium) | 03 §7.3; skill `ops-runbook` | `test/load/transfer.js`, hasil di `docs/evidence/k6.md` | p95 < 200 ms, p99 < 500 ms @100 VU; **trial balance 0 setelah load** |
-| 30 | OpenAPI + README + `/security-review` + **G-3** | `senior-go-dev` (Sonnet, low) → skill `/security-review` → **Fable 5.1 (high, read-only)** | 05 L14 struktur README; semua `docs/evidence/*` | `docs/openapi.yaml`, `README.md`, tag `v1.0.0` | Semua kotak DoD PRD §6 tercentang dengan tautan bukti |
+| 30 | OpenAPI + README + `/security-review` + **G-3** | `senior-go-dev` (Sonnet, low) → skill `/security-review` → **Opus 5.5 (high, read-only)** | 05 L14 struktur README; semua `docs/evidence/*` | `docs/openapi.yaml`, `README.md`, tag `v1.0.0` | Semua kotak DoD PRD §6 tercentang dengan tautan bukti |
 
 Cadangan (bukan sesi terjadwal): `/simplify` setelah sesi 24 dan 27; `explorer` (Haiku) kapan pun butuh mencari.
 
@@ -384,9 +384,9 @@ Cadangan (bukan sesi terjadwal): `/simplify` setelah sesi 24 dan 27; `explorer` 
 2. **`HANDOVER.md` adalah memori proyek**, bukan percakapan. Format dok 04 §7 butir 3.
 3. **Sebut file dengan `@path`**, jangan "lihat service transfer".
 4. **Pencarian lewat `explorer`** (Haiku), bukan grep di sesi utama.
-5. **Fable hanya di G-1/G-2/G-3.** Kalau tergoda memakainya untuk debugging, coba `senior-architect` (Opus) dulu.
+5. **Opus effort tinggi/`xhigh` hanya di G-1/G-2/G-3.** Kalau tergoda memakainya untuk debugging biasa, coba `senior-architect` (Opus, effort medium) dulu.
 6. **Plan mode sebelum sesi 12, 13, 18, 19.** Kode uang yang dibongkar tiga kali lebih mahal daripada satu rencana yang dibaca.
-7. Cek dashboard usage di akhir minggu 1: kalau Opus/Fable terpakai untuk pekerjaan Sonnet/Haiku, routing frontmatter tidak jalan — pindah ke pemanggilan eksplisit `model:` di Agent tool.
+7. Cek dashboard usage di akhir minggu 1: kalau Opus terpakai untuk pekerjaan Sonnet/Haiku, routing frontmatter tidak jalan — pindah ke pemanggilan eksplisit `model:` di Agent tool.
 
 ---
 

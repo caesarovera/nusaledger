@@ -1242,9 +1242,27 @@ Sengaja **tidak** dipindah ke `allow` (otomatis disetujui). Alasannya sejalan de
 
 ---
 
-## Status akhir sesi (2026-09-22)
+## Sesi 43 — Kebijakan gerbang review diganti dari Fable 5.1 ke Opus 5.5 (2026-09-30)
 
-Sesi 1–42 selesai. **Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SELESAI TOTAL**: outbox relay (Sesi 34), role DB terbatas untuk `entries` (Sesi 35), rate limit Redis opsional (Sesi 36), pembatasan jaringan `/metrics` (Sesi 37) — tidak ada item Fase 2 yang tersisa. Sesi 38–39 menutup dua lubang dokumentasi yang ditemukan lewat pemeriksaan ulang (setup GitHub/push/CI, dan identitas git). Sesi 40 menutup CI yang sempat merah setelah push Sesi 35–39 (ambang ukuran image, bukan bug). Sesi 41 membersihkan deny rule `Bash(psql:*production*)` yang ternyata tidak valid sejak ditulis, dan sengaja TIDAK menggantinya dengan kode. Sesi 42 mengganti larangan push total menjadi persetujuan per kejadian, konsisten dengan alasan Sesi 41. Satu-satunya keterbatasan yang masih terbuka di seluruh proyek: p95 10 ms di atas target dari pengukuran k6 di Docker Desktop Windows (Sesi 33), dicatat sadar sebagai keterbatasan lingkungan, bukan bug.
+### Apa
+Diminta mengganti setting model untuk tiga gerbang review (G-1/G-2/G-3, docs/06 §4) dari `fable` ke Opus versi terbaru. `docs/06-PLAN-EKSEKUSI-AI.md` diperbarui: peta model §3.1 (tabel harga, ringkasan §0), heading §4, cara memanggil, dan ketiga baris tabel sesi (10, 26, 30) — semua rujukan "Fable 5.1" untuk kebijakan ke depan diganti "Opus 5.5 (effort tinggi/`xhigh`, read-only)".
+
+### Kenapa
+Diminta langsung oleh pemilik proyek. Fable adalah model terpisah termahal ($10/$50) yang cuma dipakai 2 dari 3 kali (G-2, G-3 — G-1 sudah menyimpang, dikerjakan inline, lihat §10 dan Sesi 4). Mengonsolidasikan ke Opus (yang sudah dipakai proyek ini untuk `senior-architect`/`senior-dba`) menyederhanakan peta model jadi 3 tingkat (Opus → Sonnet → Haiku) tanpa tingkat keempat yang jarang terpakai, sambil tetap mempertahankan prinsip "model termahal hanya di titik paling berisiko" lewat effort tinggi/`xhigh`, bukan model terpisah.
+
+### Contoh
+Perubahan HANYA di bagian kebijakan/rencana ke depan `docs/06-PLAN-EKSEKUSI-AI.md`. **Tidak** menyentuh:
+- `docs/06 §10` (Status Eksekusi) — baris G-2/G-3 tetap tercatat "Fable" karena itu fakta model apa yang benar-benar dipakai saat itu.
+- `HANDOVER.md`, `docs/JURNAL-BELAJAR.md` entri lama, `README.md` — semua narasi historis G-2/G-3 dengan Fable dibiarkan apa adanya. Mengubahnya akan memalsukan catatan tentang apa yang sungguh terjadi.
+
+### Bukti
+`git diff docs/06-PLAN-EKSEKUSI-AI.md` menunjukkan hanya bagian §0, §3.1, §4, dan §7 butir 5/7 yang berubah; §10 (histori) tidak tersentuh. Tidak ada kode Go yang berubah — ini murni dokumen kebijakan, karena frontmatter agent (`model: opus/sonnet/haiku`) tidak pernah mengarah ke `fable` untuk pekerjaan rutin; yang berubah hanya instruksi pemanggilan manual untuk tiga gerbang.
+
+---
+
+## Status akhir sesi (2026-09-30)
+
+Sesi 1–43 selesai. **Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SELESAI TOTAL**: outbox relay (Sesi 34), role DB terbatas untuk `entries` (Sesi 35), rate limit Redis opsional (Sesi 36), pembatasan jaringan `/metrics` (Sesi 37) — tidak ada item Fase 2 yang tersisa. Sesi 38–39 menutup dua lubang dokumentasi yang ditemukan lewat pemeriksaan ulang (setup GitHub/push/CI, dan identitas git). Sesi 40 menutup CI yang sempat merah setelah push Sesi 35–39 (ambang ukuran image, bukan bug). Sesi 41 membersihkan deny rule `Bash(psql:*production*)` yang ternyata tidak valid sejak ditulis, dan sengaja TIDAK menggantinya dengan kode. Sesi 42 mengganti larangan push total menjadi persetujuan per kejadian, konsisten dengan alasan Sesi 41. Sesi 43 mengganti kebijakan gerbang review dari Fable 5.1 ke Opus 5.5 di `docs/06` (kebijakan ke depan, histori G-2/G-3 dengan Fable tidak diubah). Satu-satunya keterbatasan yang masih terbuka di seluruh proyek: p95 10 ms di atas target dari pengukuran k6 di Docker Desktop Windows (Sesi 33), dicatat sadar sebagai keterbatasan lingkungan, bukan bug.
 
 **Catatan tentang penomoran sesi**: nomor 10, 15–17, 21, dan 25 (dari tabel 30-sesi rencana awal, `docs/06-PLAN-EKSEKUSI-AI.md`) tidak muncul sebagai judul tersendiri di jurnal ini — isinya ADA, tapi digabung ke entri sesi lain karena pekerjaannya kecil/terkait langsung (mis. review G-1/Sesi 10 disebut inline di entri Sesi 4 "Migration & skema"; reversal/Sesi 21 ada di dalam Sesi 12–13 "LedgerRepo.Post"; E2E IDOR/Sesi 25 ada di dalam Sesi 23–24 & 27). Kalau mencari topik tertentu, cari kata kuncinya (mis. "reversal", "IDOR") lewat pencarian teks, bukan nomor sesinya.
 

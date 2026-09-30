@@ -1,5 +1,11 @@
 # HANDOVER
 
+## Terakhir dikerjakan (2026-09-30) — Kebijakan gerbang review diganti dari Fable 5.1 ke Opus 5.5
+
+Diminta mengganti setting model gerbang review (G-1/G-2/G-3) dari `fable` ke Opus versi terbaru. `docs/06-PLAN-EKSEKUSI-AI.md` diperbarui di bagian kebijakan/rencana (§0, §3.1, §4, §7): tiga gerbang sekarang memanggil `model: opus` dengan effort tinggi/`xhigh`, read-only — bukan model terpisah yang lebih mahal. `docs/06 §10` (Status Eksekusi, histori G-2/G-3 yang benar-benar memakai Fable) serta `README.md`/jurnal lama **tidak diubah**, supaya catatan tentang apa yang benar-benar terjadi tidak berubah jadi fiksi. Detail lengkap di jurnal Sesi 43.
+
+**Status:** sudah di-commit.
+
 ## Terakhir dikerjakan (2026-09-22) — Aturan push diperlonggar: larangan total → persetujuan per kejadian
 
 Diminta mengubah kebijakan push. Sebelumnya `CLAUDE.md` melarang push sama sekali dan `.claude/settings.json` memblokirnya otomatis lewat `deny`. Sekarang: `CLAUDE.md` mengizinkan push HANYA dengan persetujuan eksplisit pemilik proyek untuk kejadian itu (bukan izin baku), dan baris `"Bash(git push:*)"` dihapus dari `deny` — **tidak** dipindah ke `allow`, jadi setiap `git push` tetap memicu prompt konfirmasi manual, bukan otomatis diblokir maupun otomatis disetujui. Detail lengkap (kenapa dua file harus berubah bersamaan, kenapa bukan `allow`) di jurnal Sesi 42.
