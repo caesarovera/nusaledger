@@ -50,4 +50,4 @@ Ini portofolio teknis, bukan produk keuangan sungguhan.
 - Jangan buat file baru bila bisa mengedit yang ada.
 - Jangan menambah dependensi di luar daftar tanpa ditanyakan lebih dulu.
 - Jangan menulis komentar yang mengulang isi kode.
-- Jangan git push. Push adalah keputusan manusia.
+- Git push oleh Claude hanya boleh dengan persetujuan eksplisit dari Anda untuk kejadian itu (bukan izin baku/blanket). Tanpa persetujuan eksplisit setiap kali, jangan push.

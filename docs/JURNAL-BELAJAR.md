@@ -1214,9 +1214,37 @@ Hook ini sempat benar-benar aktif dan memblokir, jadi pembongkarannya adalah kep
 
 ---
 
-## Status akhir sesi (2026-09-20)
+## Sesi 42 — Aturan push diperlonggar: larangan total diganti persetujuan per kejadian (2026-09-22)
 
-Sesi 1–41 selesai. **Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SELESAI TOTAL**: outbox relay (Sesi 34), role DB terbatas untuk `entries` (Sesi 35), rate limit Redis opsional (Sesi 36), pembatasan jaringan `/metrics` (Sesi 37) — tidak ada item Fase 2 yang tersisa. Sesi 38–39 menutup dua lubang dokumentasi yang ditemukan lewat pemeriksaan ulang (setup GitHub/push/CI, dan identitas git). Sesi 40 menutup CI yang sempat merah setelah push Sesi 35–39 (ambang ukuran image, bukan bug). Sesi 41 membersihkan deny rule `Bash(psql:*production*)` yang ternyata tidak valid sejak ditulis, dan sengaja TIDAK menggantinya dengan kode — alasannya dicatat penuh di entri Sesi 41. Satu-satunya keterbatasan yang masih terbuka di seluruh proyek: p95 10 ms di atas target dari pengukuran k6 di Docker Desktop Windows (Sesi 33), dicatat sadar sebagai keterbatasan lingkungan, bukan bug.
+### Apa
+Pemilik proyek meminta perubahan kebijakan push, langsung setelah Sesi 41. Sebelumnya: `CLAUDE.md` §Larangan berbunyi "Jangan git push. Push adalah keputusan manusia." dan `.claude/settings.json` punya `"Bash(git push:*)"` di `deny` — diblokir otomatis, tanpa prompt sama sekali. Diubah keduanya sekaligus:
+- `CLAUDE.md`: diganti "Git push oleh Claude hanya boleh dengan persetujuan eksplisit dari Anda untuk kejadian itu (bukan izin baku/blanket). Tanpa persetujuan eksplisit setiap kali, jangan push."
+- `.claude/settings.json`: baris `"Bash(git push:*)"` dihapus dari `deny`. **Tidak** ditambahkan ke `allow` — jadi `git push` sekarang memicu prompt konfirmasi manual setiap kali, bukan otomatis diblokir maupun otomatis disetujui.
+
+### Kenapa dua-duanya harus diubah bersamaan, dan kenapa bukan `allow`
+Kalau hanya `settings.json` yang diubah, `CLAUDE.md` tertulis masih melarang push sedangkan tool sudah membolehkannya lewat prompt — dokumen dan perilaku sistem saling bertentangan, sesi berikutnya bisa salah membaca teks lama sebagai larangan mutlak. Kalau hanya `CLAUDE.md` yang diubah, deny rule yang tersisa tetap memblokir push secara mekanis apa pun yang tertulis di dokumen — izin di kertas tidak berarti apa-apa di level tool.
+
+Sengaja **tidak** dipindah ke `allow` (otomatis disetujui). Alasannya sejalan dengan pelajaran Sesi 41: git push ke remote publik adalah tindakan yang terlihat orang lain dan sulit ditarik kembali secara sosial (riwayat publik), jadi tetap layak persetujuan manusia per kejadian — bedanya dengan sebelumnya hanya soal *default*-nya (diblokir keras → ditanyakan), bukan soal levelnya jadi otomatis.
+
+### Contoh
+```diff
+ "deny": [
+-  "Bash(git push:*)",
+   "Bash(rm -rf:*)",
+   "Read(./.env)",
+   "Read(./.env.*)"
+ ]
+```
+`git push` sekarang tidak ada di `allow` maupun `deny` → perilaku default harness: prompt persetujuan.
+
+### Bukti
+`git diff` sebelum commit menunjukkan tepat satu baris hilang di `.claude/settings.json` dan satu baris berubah (bukan ditambah) di `CLAUDE.md` — tidak ada perubahan lain ikut terbawa. Diverifikasi lewat pemakaian sungguhan pada Sesi ini juga: `git push` memicu dialog persetujuan, bukan ditolak otomatis dengan pesan deny rule seperti sebelumnya.
+
+---
+
+## Status akhir sesi (2026-09-22)
+
+Sesi 1–42 selesai. **Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SELESAI TOTAL**: outbox relay (Sesi 34), role DB terbatas untuk `entries` (Sesi 35), rate limit Redis opsional (Sesi 36), pembatasan jaringan `/metrics` (Sesi 37) — tidak ada item Fase 2 yang tersisa. Sesi 38–39 menutup dua lubang dokumentasi yang ditemukan lewat pemeriksaan ulang (setup GitHub/push/CI, dan identitas git). Sesi 40 menutup CI yang sempat merah setelah push Sesi 35–39 (ambang ukuran image, bukan bug). Sesi 41 membersihkan deny rule `Bash(psql:*production*)` yang ternyata tidak valid sejak ditulis, dan sengaja TIDAK menggantinya dengan kode. Sesi 42 mengganti larangan push total menjadi persetujuan per kejadian, konsisten dengan alasan Sesi 41. Satu-satunya keterbatasan yang masih terbuka di seluruh proyek: p95 10 ms di atas target dari pengukuran k6 di Docker Desktop Windows (Sesi 33), dicatat sadar sebagai keterbatasan lingkungan, bukan bug.
 
 **Catatan tentang penomoran sesi**: nomor 10, 15–17, 21, dan 25 (dari tabel 30-sesi rencana awal, `docs/06-PLAN-EKSEKUSI-AI.md`) tidak muncul sebagai judul tersendiri di jurnal ini — isinya ADA, tapi digabung ke entri sesi lain karena pekerjaannya kecil/terkait langsung (mis. review G-1/Sesi 10 disebut inline di entri Sesi 4 "Migration & skema"; reversal/Sesi 21 ada di dalam Sesi 12–13 "LedgerRepo.Post"; E2E IDOR/Sesi 25 ada di dalam Sesi 23–24 & 27). Kalau mencari topik tertentu, cari kata kuncinya (mis. "reversal", "IDOR") lewat pencarian teks, bukan nomor sesinya.
 

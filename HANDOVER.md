@@ -1,5 +1,11 @@
 # HANDOVER
 
+## Terakhir dikerjakan (2026-09-22) — Aturan push diperlonggar: larangan total → persetujuan per kejadian
+
+Diminta mengubah kebijakan push. Sebelumnya `CLAUDE.md` melarang push sama sekali dan `.claude/settings.json` memblokirnya otomatis lewat `deny`. Sekarang: `CLAUDE.md` mengizinkan push HANYA dengan persetujuan eksplisit pemilik proyek untuk kejadian itu (bukan izin baku), dan baris `"Bash(git push:*)"` dihapus dari `deny` — **tidak** dipindah ke `allow`, jadi setiap `git push` tetap memicu prompt konfirmasi manual, bukan otomatis diblokir maupun otomatis disetujui. Detail lengkap (kenapa dua file harus berubah bersamaan, kenapa bukan `allow`) di jurnal Sesi 42.
+
+**Status:** sudah di-commit.
+
 ## Terakhir dikerjakan (2026-09-20) — Deny rule `psql` yang tidak valid dibersihkan; hook penggantinya sengaja dibatalkan
 
 Claude Code memperingatkan saat start bahwa deny rule `Bash(psql:*production*)` di `.claude/settings.json` **tidak valid dan dilewati** — sintaks `Bash(...)` hanya mengenal `:*` sebagai penanda prefix di AKHIR pola, bukan wildcard di tengah. Rule itu tidak pernah menjaga apa pun sejak ditulis.
@@ -12,7 +18,7 @@ Penggantinya sempat dibuat dan **terbukti jalan**: hook `PreToolUse` (skrip Pyth
 
 **Aturan pengganti (keputusan, bukan kode):** kredensial production tidak pernah masuk ke `.env` repo ini maupun ke environment sesi Claude Code. Saat production benar-benar ada, guard (kalau dipakai) menyasar *connection string/host*, berlaku untuk SEMUA perintah — bukan hanya `psql` — dan tetap lapis kedua di bawah isolasi kredensial.
 
-**Status:** belum di-commit — menunggu keputusan Anda.
+**Status:** sudah di-commit dan di-push (`fa6cafd`, 2026-09-22).
 
 ## Terakhir dikerjakan (2026-09-16, lanjutan) — CI merah diperbaiki: image `api` melebihi ambang 20 MB
 Ditanya "opsi A dulu" (perbaiki CI yang merah sebelum memilih arah lanjutan). Dicek dengan `gh run list`/`gh run view`: job `image` gagal di push Sesi 35–39, image `api` sekarang 24 MB (ambang lama 20 MB). Akar masalah dikonfirmasi dengan `git diff v1.1.0 main -- go.mod` + `go list -deps ./cmd/api`: `github.com/redis/go-redis/v9` (Sesi 36) satu-satunya dependensi produksi baru yang ikut ke binary `cmd/api`, membawa 14 sub-paket. Image `worker` TIDAK terpengaruh (tetap 13,5 MB, tidak mengimpor `ratelimit`).
@@ -37,6 +43,10 @@ Ditutup dengan **Sesi 38 dan 39** (jurnal, ditulis mundur — kejadiannya SUDAH 
 Item ketiga dan terakhir dari "lanjutkan berdasarkan prioritas terpenting dahulu". Sengaja BUKAN perubahan kode: `/metrics` tanpa autentikasi di level aplikasi TETAP demikian (mengubahnya akan merusak model *scraping* Prometheus standar), pembatasan yang benar ada di jaringan. Ditulis `docs/deploy-metrics-network.md` — contoh konfigurasi nginx (`allow`/`deny` per CIDR), Caddy (`remote_ip` matcher), dan alternatif `NetworkPolicy` Kubernetes (lebih kuat: menempel di Pod, bukan per instance proxy) — plus penjelasan kenapa dev repo ini SUDAH aman (semua port diikat `127.0.0.1` sejak audit F-2).
 
 **Fase 2 sekarang selesai total**: outbox relay (Sesi 34), role DB terbatas (Sesi 35), rate limit Redis (Sesi 36), pembatasan jaringan `/metrics` (Sesi 37, dokumentasi). Tidak ada item Fase 2 yang tersisa.
+
+## Terakhir dikerjakan (2026-09-22, lanjutan) — Analisa tasklist terbuka (docs/07)
+
+Diminta cek seluruh tasklist yang belum selesai di proyek. Dibuat `docs/07-ANALISA-TASKLIST-TERBUKA.md`: menyilangkan `HANDOVER.md`, `git log`/`git status`, tag lokal vs remote, `gh run list`, dan jurnal, untuk memisahkan pekerjaan yang benar-benar belum selesai dari yang HANDOVER-nya sekadar belum diperbarui. Hasil: dua kategori — item yang tinggal dirapikan (dokumen ini + jurnal, sudah ditutup di entri di atas) vs keputusan yang menunggu pemilik proyek (arah Fase 3, k6 Linux native, guard kredensial production).
 
 ## Terakhir dikerjakan (2026-09-16, lanjutan) — Rate limit Redis opsional (Fase 2, prioritas kedua dari 3 sisa item)
 Lanjutan langsung dari item sebelumnya (role DB). Dikerjakan `RedisLimiter` (`internal/platform/ratelimit/redis.go`) yang mengimplementasikan kontrak `allower` (`Allow(key string) bool`) yang SAMA dengan `Limiter` in-memory — jadi `router.go`/`middleware.go` tidak disentuh sama sekali.
@@ -116,12 +126,12 @@ Coverage: domain 99,1 %, service 84,2 %. Bukti lengkap di `docs/evidence/`. Jurn
 ## Berikutnya
 **Fase 1 SELESAI TOTAL** (v1.0.3). **Fase 2 SELESAI TOTAL** (tag `v1.2.0`, sudah di-push ke GitHub) — outbox relay, role DB terbatas, rate limit Redis, pembatasan jaringan `/metrics`, semua selesai dan terverifikasi. Jurnal juga sudah ditutup lubangnya (Sesi 38–39: setup GitHub/push/CI, identitas git). Tidak ada item Fase 1/Fase 2 yang tersisa.
 1. Satu-satunya item lama yang masih terbuka di seluruh proyek: pengukuran ulang k6 di Linux native untuk menutup selisih p95 10 ms dari Sesi 33. **Bukan blocker**, dan mesin ini TIDAK punya distro WSL2 biasa (hanya `docker-desktop` internal) — mengerjakan ini butuh memasang distro (mis. Ubuntu) dulu, keputusan infrastruktur yang lebih baik ditanyakan, bukan diasumsikan.
-1b. Perubahan Sesi 41 (`.claude/settings.json` −1 baris, jurnal, HANDOVER) belum di-commit.
+1b. Perubahan Sesi 41 dan 42 (`.claude/settings.json`, `CLAUDE.md`, jurnal, HANDOVER, `docs/07`) sudah di-commit.
 2. Tidak ada rencana Fase 3 yang dikunci — kalau diminta melanjutkan lagi, tanyakan dulu arah yang diinginkan (Fase 2 tidak punya PRD sejak awal; sudah dikerjakan atas asumsi eksplisit yang dicatat di jurnal Sesi 34).
 
 ## Keputusan yang sudah diambil
 - Semua keputusan docs/06 §2 (F-01…F-06, K-01…K-09) DISETUJUI pemilik proyek pada 2026-09-16.
-- Go 1.27.0 (bukan 1.25 — itu yang terpasang lewat winget). Module: `github.com/caesarovera/nusaledger` (ganti kalau username GitHub berbeda: `go mod edit -module ...` + sed impor).
+- Go 1.27.0 (bukan 1.25 — itu yang terpasang lewat winget). Module: `github.com/caesarovera/nusaledger` — final (username GitHub `caesarovera`, remote dan push sudah berfungsi sejak 2026-09-16).
 - Router chi v5, JWT golang-jwt/v5, hash argon2id, config caarlos0/env, driver pgx/v5.
 
 ## Catatan / jebakan
@@ -135,9 +145,6 @@ Coverage: domain 99,1 %, service 84,2 %. Bukti lengkap di `docs/evidence/`. Jurn
 - winget id k6 adalah `GrafanaLabs.k6`, bukan `k6.k6`.
 - Makefile memakai `SHELL := bash` (Git Bash ada di PATH lewat laragon). `make help` menampilkan daftar perintah.
 - `ANTHROPIC_API_KEY` kosong — Claude Code memakai kuota Pro, bukan kredit API. Jangan diset di env sistem.
-
-## Belum diputuskan
-- Username GitHub untuk module path (asumsi: caesarovera).
 
 ## Update — push pertama & CI (2026-09-16)
 
